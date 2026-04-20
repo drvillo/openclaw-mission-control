@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT="/Users/fonkey-oc/.openclaw/openclaw-mission-control"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export OPENCLAW_HOME="${OPENCLAW_HOME:-/Users/fonkey-oc/.openclaw}"
@@ -9,4 +9,3 @@ export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-/Users/fonkey-oc/Documents/Obsidian/F-H
 export MISSION_CONTROL_STATE_DIR="${MISSION_CONTROL_STATE_DIR:-/Users/fonkey-oc/.openclaw/mission-control-state}"
 
 exec pnpm start:web
-

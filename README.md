@@ -53,6 +53,8 @@ Launchd templates live in `ops/launchd/`:
 
 Recommended install flow on macOS:
 
+Replace `/Users/fonkey-oc/.openclaw/openclaw-mission-control` with your final checkout path if you move the repo.
+
 ```bash
 mkdir -p ~/.openclaw/mission-control-state/logs
 cp /Users/fonkey-oc/.openclaw/openclaw-mission-control/ops/launchd/*.plist ~/Library/LaunchAgents/
