@@ -1,0 +1,41 @@
+{
+  "routes": [
+    {
+      "id": "mail-inbox-intake",
+      "source": "agentmail",
+      "match": {
+        "inbox": "fonkey@agentmail.to"
+      },
+      "flowTemplate": "mail_inbox_intake",
+      "ownerAgent": "mail-agent"
+    },
+    {
+      "id": "travel-request-intake",
+      "source": "agentmail",
+      "match": {
+        "inbox": "fonkey-travel@agentmail.to"
+      },
+      "flowTemplate": "travel_request_intake",
+      "ownerAgent": "travel-assistant"
+    },
+    {
+      "id": "meeting-capture",
+      "source": "fathom",
+      "match": {
+        "path": "/fathom/webhook"
+      },
+      "flowTemplate": "meeting_capture",
+      "ownerAgent": "meeting-assistant"
+    },
+    {
+      "id": "system-improvement-review",
+      "source": "cron",
+      "match": {
+        "job": "nightly-improvement"
+      },
+      "flowTemplate": "system_improvement_review",
+      "ownerAgent": "research-agent"
+    }
+  ]
+}
+

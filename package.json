@@ -1,0 +1,12 @@
+{
+  "name": "openclaw-mission-control",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev:web": "pnpm --filter @ocmc/web dev",
+    "dev:worker": "pnpm --filter @ocmc/worker dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
+
