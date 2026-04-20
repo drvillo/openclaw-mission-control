@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${PORT:-3099}"
-HOSTNAME="${HOSTNAME:-127.0.0.1}"
+HOSTNAME="${HOSTNAME:-0.0.0.0}"
 LABEL="ai.drvillo.openclaw-mission-control.web"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
