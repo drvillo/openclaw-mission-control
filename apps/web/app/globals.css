@@ -86,6 +86,13 @@ h1 {
   margin-top: 1rem;
 }
 
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
 .metric {
   font-size: 3rem;
   line-height: 1;
@@ -94,7 +101,10 @@ h1 {
 
 .caption,
 .detail,
-.event-row {
+.event-row,
+.panel-copy,
+.muted,
+.action-message {
   color: var(--ink-soft);
 }
 
@@ -118,6 +128,65 @@ h1 {
   padding-left: 1rem;
 }
 
+.table-shell {
+  margin-top: 1rem;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 680px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.8rem 0.6rem;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th {
+  border-top: none;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.action-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.action-button {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.action-trigger {
+  border: 1px solid rgba(203, 95, 40, 0.28);
+  background: rgba(203, 95, 40, 0.08);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.5rem 0.85rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.action-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.action-message,
+.panel-copy {
+  margin-top: 0.5rem;
+}
+
 code {
   font-family: "SFMono-Regular", Menlo, monospace;
   font-size: 0.92em;
@@ -127,5 +196,8 @@ code {
   .page-shell {
     padding-inline: 0.9rem;
   }
-}
 
+  .panel-header {
+    flex-direction: column;
+  }
+}

@@ -35,6 +35,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@ocmc/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@ocmc/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -51,6 +54,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@ocmc/shared':
+        specifier: workspace:*
+        version: link:../shared
       drizzle-orm:
         specifier: ^0.44.6
         version: 0.44.7

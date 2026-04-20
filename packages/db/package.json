@@ -4,6 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@ocmc/shared": "workspace:*",
     "drizzle-orm": "^0.44.6"
   },
   "devDependencies": {
@@ -11,4 +12,3 @@
     "typescript": "^5.9.3"
   }
 }
-
