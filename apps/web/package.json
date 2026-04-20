@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/prepare-standalone.mjs",
     "start": "next start",
     "start:local": "HOSTNAME=127.0.0.1 PORT=3099 node .next/standalone/apps/web/server.js",
     "typecheck": "tsc --noEmit"
