@@ -5,6 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:local": "HOSTNAME=127.0.0.1 PORT=3099 node .next/standalone/apps/web/server.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,4 +20,3 @@
     "typescript": "^5.9.3"
   }
 }
-

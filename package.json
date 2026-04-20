@@ -5,8 +5,10 @@
   "scripts": {
     "dev:web": "pnpm --filter @ocmc/web dev",
     "dev:worker": "pnpm --filter @ocmc/worker dev",
+    "start:web": "pnpm --filter @ocmc/web start:local",
+    "run:worker": "pnpm --filter @ocmc/worker start",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "ci": "pnpm typecheck && pnpm build"
   }
 }
-

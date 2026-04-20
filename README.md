@@ -34,3 +34,32 @@ The sandbox for this session does not permit writing to `/Users/fonkey-oc/Code`,
 - reads OpenClaw `tasks`, `tasks flow`, and `tasks audit` output via the worker
 - exposes a first dashboard for task state, flow state, and webhook ingress visibility
 
+## CI
+
+The repo includes a GitHub Actions workflow at `.github/workflows/ci.yml` that:
+
+- installs dependencies with `pnpm`
+- runs `pnpm typecheck`
+- runs `pnpm build`
+
+This is the right initial CI surface for Mission Control because the highest-probability regressions here are TypeScript contract drift and build breakage.
+
+## macOS Startup
+
+Launchd templates live in `ops/launchd/`:
+
+- `ai.drvillo.openclaw-mission-control.web.plist`
+- `ai.drvillo.openclaw-mission-control.worker.plist`
+
+Recommended install flow on macOS:
+
+```bash
+mkdir -p ~/.openclaw/mission-control-state/logs
+cp /Users/fonkey-oc/.openclaw/openclaw-mission-control/ops/launchd/*.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/ai.drvillo.openclaw-mission-control.web.plist
+launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/ai.drvillo.openclaw-mission-control.worker.plist
+launchctl kickstart -k "gui/$UID/ai.drvillo.openclaw-mission-control.web"
+launchctl kickstart -k "gui/$UID/ai.drvillo.openclaw-mission-control.worker"
+```
+
+The web service runs continuously on `127.0.0.1:3099`. The worker runs every 120 seconds and refreshes the snapshot and event-derived state.

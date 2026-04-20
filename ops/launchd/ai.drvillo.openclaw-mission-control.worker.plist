@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>ai.drvillo.openclaw-mission-control.worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/zsh</string>
+      <string>/Users/fonkey-oc/.openclaw/openclaw-mission-control/scripts/run-worker.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/fonkey-oc/.openclaw/openclaw-mission-control</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/fonkey-oc/.openclaw/mission-control-state/logs/worker.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/fonkey-oc/.openclaw/mission-control-state/logs/worker.stderr.log</string>
+  </dict>
+</plist>

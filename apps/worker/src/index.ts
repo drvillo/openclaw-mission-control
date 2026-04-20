@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { MISSION_CONTROL_STATE_DIR, OPENCLAW_HOME, SNAPSHOT_PATH } from "./config.ts";
+import { MISSION_CONTROL_STATE_DIR, OPENCLAW_HOME, SNAPSHOT_PATH } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
