@@ -2,7 +2,7 @@
   "name": "@ocmc/web",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3000} next dev",
     "build": "next build && node scripts/prepare-standalone.mjs",
     "start": "next start",
     "start:local": "HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3099} node .next/standalone/apps/web/server.js",

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { EventEnvelope } from "@ocmc/shared";
 
@@ -64,11 +64,9 @@ function normalizeEvent(source: string, raw: Record<string, unknown>, index: num
 
 export function collectWebhookEvents(stateDir: string): EventEnvelope[] {
   const eventsRoot = path.join(stateDir, "events");
-  if (!existsSync(eventsRoot)) {
-    return [];
-  }
-
-  return readdirSync(eventsRoot)
+  const loggedEvents = !existsSync(eventsRoot)
+    ? []
+    : readdirSync(eventsRoot)
     .flatMap((source) => {
       const sourceDir = path.join(eventsRoot, source);
       if (!existsSync(sourceDir)) {
@@ -85,4 +83,61 @@ export function collectWebhookEvents(stateDir: string): EventEnvelope[] {
         });
     })
     .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+
+  const openClawHome = process.env.OPENCLAW_HOME ?? "/Users/fonkey-oc/.openclaw";
+  const queueDir = path.join(openClawHome, "workspace", ".state", "agentmail-webhook-router", "queue");
+  if (!existsSync(queueDir)) {
+    return loggedEvents;
+  }
+
+  const seenIds = new Set(loggedEvents.filter((event) => event.source === "agentmail").map((event) => event.eventId));
+  const seenPaths = new Set(loggedEvents.filter((event) => event.source === "agentmail").map((event) => event.payloadPath).filter(Boolean));
+
+  const fallbackEvents = readdirSync(queueDir)
+    .filter((fileName) => fileName.endsWith(".json"))
+    .flatMap((fileName) => {
+      const filePath = path.join(queueDir, fileName);
+      if (seenPaths.has(filePath)) {
+        return [];
+      }
+      const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+      const eventId = String(raw.event_id ?? stableEventId("agentmail", fileName, JSON.stringify(raw), 0));
+      if (seenIds.has(eventId)) {
+        return [];
+      }
+      const inboxId = String(raw.inbox_id ?? "");
+      const routeId =
+        typeof raw.taskflow_route === "string"
+          ? raw.taskflow_route
+          : inboxId === "fonkey-travel@agentmail.to"
+            ? "travel-request-intake"
+            : inboxId
+              ? "mail-inbox-intake"
+              : undefined;
+      const ownerAgent =
+        raw.route_kind === "travel_flow" ? "travel-assistant" : raw.route_kind === "notify_mail_agent" ? "mail-agent" : undefined;
+      const recordedAt = new Date(statSync(filePath).mtimeMs).toISOString();
+      return [
+        {
+          eventId,
+          source: "agentmail",
+          eventType: "agentmail.queue",
+          routeId,
+          flowId: typeof raw.flow_id === "string" ? raw.flow_id : undefined,
+          ownerAgent,
+          status: typeof raw.status === "string" ? raw.status : "queued_only",
+          payloadPath: filePath,
+          correlationId: typeof raw.message_id === "string" ? raw.message_id : undefined,
+          attemptCount: 0,
+          recordedAt,
+          rawJson: JSON.stringify(raw, null, 2),
+        } satisfies EventEnvelope,
+      ];
+    });
+
+  const deduped = new Map<string, EventEnvelope>();
+  for (const event of [...loggedEvents, ...fallbackEvents].sort((left, right) => left.recordedAt.localeCompare(right.recordedAt))) {
+    deduped.set(`${event.source}:${event.eventId}`, event);
+  }
+  return [...deduped.values()].sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
 }

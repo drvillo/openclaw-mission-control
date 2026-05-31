@@ -1,0 +1,137 @@
+{
+  "rules": [
+    {
+      "id": "mail-send",
+      "policyDomain": "mail",
+      "expectedTargetAgent": "mail-agent",
+      "match": {
+        "all": [
+          "\\b(send|draft|reply|forward|attach|email)\\b"
+        ],
+        "any": [
+          "\\bemail\\b",
+          "\\bmail\\b",
+          "@",
+          "\\binbox\\b"
+        ]
+      },
+      "wrongTools": [
+        "message"
+      ],
+      "directExecPatterns": [
+        "workspace-mail-agent/scripts/send_outbound_email.py"
+      ]
+    },
+    {
+      "id": "travel-intake",
+      "policyDomain": "travel",
+      "expectedTargetAgent": "travel-assistant",
+      "match": {
+        "any": [
+          "\\btravel\\b",
+          "\\btrip\\b",
+          "\\bflight\\b",
+          "\\bhotel\\b",
+          "\\bitinerary\\b",
+          "\\bbooking\\b"
+        ]
+      }
+    },
+    {
+      "id": "task-board-work",
+      "policyDomain": "task-board",
+      "expectedTargetAgent": "task-ops-agent",
+      "match": {
+        "any": [
+          "\\btask board\\b",
+          "\\btaskflow\\b",
+          "\\btask flow\\b",
+          "\\bbacklog\\b",
+          "\\binbox\\b",
+          "\\bobsidian task\\b",
+          "\\bcancel flow\\b",
+          "\\bcancel task\\b"
+        ]
+      }
+    },
+    {
+      "id": "invoice-ops-workflow",
+      "policyDomain": "invoice-ops",
+      "expectedTargetAgent": "invoice-ops",
+      "match": {
+        "all": [
+          "\\b(invoice|billing|statement)\\b"
+        ],
+        "any": [
+          "\\botc\\b",
+          "\\b1bridge\\b",
+          "\\bvendor management\\b",
+          "\\bwio\\b",
+          "\\bdry run\\b",
+          "\\breplay\\b"
+        ]
+      }
+    },
+    {
+      "id": "coding-review",
+      "policyDomain": "coding",
+      "expectedTargetAgent": "code-reviewer",
+      "match": {
+        "any": [
+          "\\breview\\b",
+          "\\bcode review\\b",
+          "\\bpr review\\b",
+          "\\baudit this diff\\b"
+        ]
+      }
+    },
+    {
+      "id": "coding-debug",
+      "policyDomain": "coding",
+      "expectedTargetAgent": "debugger",
+      "match": {
+        "any": [
+          "\\bdebug\\b",
+          "\\binvestigate\\b",
+          "\\bwhy does\\b",
+          "\\bbroken\\b",
+          "\\bbug\\b"
+        ]
+      }
+    },
+    {
+      "id": "coding-implement",
+      "policyDomain": "coding",
+      "expectedTargetAgent": "coding-implementer",
+      "match": {
+        "all": [
+          "\\b(code|repo|test|typescript|javascript|python|frontend|backend|api|component|function|bug|fix|implement|build|patch|refactor)\\b"
+        ],
+        "any": [
+          "\\bimplement\\b",
+          "\\bbuild\\b",
+          "\\bfix\\b",
+          "\\bpatch\\b",
+          "\\brefactor\\b",
+          "\\bfeature\\b"
+        ]
+      }
+    },
+    {
+      "id": "coding-general",
+      "policyDomain": "coding",
+      "expectedTargetAgent": "coding-router",
+      "match": {
+        "any": [
+          "\\bcode\\b",
+          "\\brepo\\b",
+          "\\btypescript\\b",
+          "\\bjavascript\\b",
+          "\\bpython\\b",
+          "\\bunit test\\b",
+          "\\bintegration test\\b"
+        ]
+      }
+    }
+  ]
+}

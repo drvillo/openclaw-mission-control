@@ -7,6 +7,7 @@ import type {
   CronRun,
   EventEnvelope,
   MemoryHealth,
+  RoutingAttempt,
   RuntimeTask,
   TaskFlow,
   TaskSnapshot,
@@ -21,6 +22,7 @@ export type DerivedStatePayload = {
   memoryHealth?: MemoryHealth[];
   cronJobs?: CronJob[];
   cronRuns?: CronRun[];
+  routingAttempts?: RoutingAttempt[];
 };
 
 export function openMissionControlDb(filePath: string): DatabaseSync {
@@ -76,6 +78,7 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       run_id TEXT,
       delivery_status TEXT,
       terminal_summary TEXT,
+      terminal_outcome TEXT,
       created_at INTEGER,
       started_at INTEGER,
       ended_at INTEGER,
@@ -87,6 +90,8 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
 
     CREATE TABLE IF NOT EXISTS task_flows (
       flow_id TEXT PRIMARY KEY,
+      sync_mode TEXT,
+      controller_id TEXT,
       owner_key TEXT,
       goal TEXT,
       status TEXT NOT NULL,
@@ -165,7 +170,44 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       recorded_at TEXT NOT NULL,
       raw_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS routing_attempts (
+      routing_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      source_agent TEXT NOT NULL,
+      source_session_id TEXT NOT NULL,
+      source_message_id TEXT NOT NULL,
+      request_group_key TEXT NOT NULL,
+      request_excerpt TEXT NOT NULL,
+      policy_rule_id TEXT,
+      policy_domain TEXT,
+      expected_target_agent TEXT,
+      actual_target_agent TEXT,
+      mechanism TEXT NOT NULL,
+      tool_call_id TEXT,
+      accepted INTEGER,
+      child_session_key TEXT,
+      child_session_id TEXT,
+      run_id TEXT,
+      status TEXT NOT NULL,
+      completion_summary TEXT,
+      failure_mode TEXT NOT NULL,
+      recovery_mode TEXT NOT NULL,
+      compliance_status TEXT NOT NULL,
+      raw_json TEXT NOT NULL
+    );
   `);
+  for (const statement of [
+    "ALTER TABLE task_flows ADD COLUMN sync_mode TEXT;",
+    "ALTER TABLE task_flows ADD COLUMN controller_id TEXT;",
+    "ALTER TABLE runtime_tasks ADD COLUMN terminal_outcome TEXT;",
+  ]) {
+    try {
+      db.exec(statement);
+    } catch {
+      // Existing deployments may already have the column.
+    }
+  }
   return db;
 }
 
@@ -190,15 +232,15 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
   const insertRuntimeTask = db.prepare(`
     INSERT INTO runtime_tasks (
       task_id, runtime, status, agent_id, label, owner_key, source_id, run_id,
-      delivery_status, terminal_summary, created_at, started_at, ended_at,
+      delivery_status, terminal_summary, terminal_outcome, created_at, started_at, ended_at,
       last_event_at, cleanup_after, recorded_at, raw_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   `);
   const insertTaskFlow = db.prepare(`
     INSERT INTO task_flows (
-      flow_id, owner_key, goal, status, current_step, blocked_task_id,
+      flow_id, sync_mode, controller_id, owner_key, goal, status, current_step, blocked_task_id,
       blocked_summary, created_at, started_at, ended_at, last_event_at, recorded_at, raw_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   `);
   const insertAuditFinding = db.prepare(`
     INSERT INTO audit_findings (
@@ -225,6 +267,15 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
       provider, recorded_at, raw_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   `);
+  const insertRoutingAttempt = db.prepare(`
+    INSERT OR REPLACE INTO routing_attempts (
+      routing_id, recorded_at, source_agent, source_session_id, source_message_id,
+      request_group_key, request_excerpt, policy_rule_id, policy_domain,
+      expected_target_agent, actual_target_agent, mechanism, tool_call_id, accepted,
+      child_session_key, child_session_id, run_id, status, completion_summary,
+      failure_mode, recovery_mode, compliance_status, raw_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+  `);
 
   try {
     db.exec("BEGIN;");
@@ -236,6 +287,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
     replaceTable(db, "memory_health");
     replaceTable(db, "cron_jobs");
     replaceTable(db, "cron_runs");
+    replaceTable(db, "routing_attempts");
 
     for (const event of payload.webhookEvents) {
       insertWebhook.run(
@@ -290,6 +342,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
         task.runId ?? null,
         task.deliveryStatus ?? null,
         task.terminalSummary ?? null,
+        task.terminalOutcome ?? null,
         task.createdAt ?? null,
         task.startedAt ?? null,
         task.endedAt ?? null,
@@ -303,6 +356,8 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
     for (const flow of payload.taskFlows) {
       insertTaskFlow.run(
         flow.flowId,
+        flow.syncMode ?? null,
+        flow.controllerId ?? null,
         flow.ownerKey ?? null,
         flow.goal ?? null,
         flow.status,
@@ -388,6 +443,34 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
         run.provider ?? null,
         run.recordedAt,
         run.rawJson,
+      );
+    }
+
+    for (const attempt of payload.routingAttempts ?? []) {
+      insertRoutingAttempt.run(
+        attempt.routingId,
+        attempt.recordedAt,
+        attempt.sourceAgent,
+        attempt.sourceSessionId,
+        attempt.sourceMessageId,
+        attempt.requestGroupKey,
+        attempt.requestExcerpt,
+        attempt.policyRuleId ?? null,
+        attempt.policyDomain ?? null,
+        attempt.expectedTargetAgent ?? null,
+        attempt.actualTargetAgent ?? null,
+        attempt.mechanism,
+        attempt.toolCallId ?? null,
+        attempt.accepted == null ? null : attempt.accepted ? 1 : 0,
+        attempt.childSessionKey ?? null,
+        attempt.childSessionId ?? null,
+        attempt.runId ?? null,
+        attempt.status,
+        attempt.completionSummary ?? null,
+        attempt.failureMode,
+        attempt.recoveryMode,
+        attempt.complianceStatus,
+        attempt.rawJson,
       );
     }
     db.exec("COMMIT;");

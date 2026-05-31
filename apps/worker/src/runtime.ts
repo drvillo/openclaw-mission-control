@@ -28,6 +28,7 @@ function parseRuntimeTask(input: unknown, recordedAt: string): RuntimeTask {
     runId: typeof task.runId === "string" ? task.runId : undefined,
     deliveryStatus: typeof task.deliveryStatus === "string" ? task.deliveryStatus : undefined,
     terminalSummary: typeof task.terminalSummary === "string" ? task.terminalSummary : undefined,
+    terminalOutcome: typeof task.terminalOutcome === "string" ? task.terminalOutcome : null,
     createdAt: typeof task.createdAt === "number" ? task.createdAt : null,
     startedAt: typeof task.startedAt === "number" ? task.startedAt : null,
     endedAt: typeof task.endedAt === "number" ? task.endedAt : null,
@@ -42,6 +43,8 @@ function parseTaskFlow(input: unknown, recordedAt: string): TaskFlow {
   const flow = (input ?? {}) as Record<string, unknown>;
   return TaskFlowSchema.parse({
     flowId: String(flow.flowId ?? flow.id ?? "unknown-flow"),
+    syncMode: typeof flow.syncMode === "string" ? flow.syncMode : undefined,
+    controllerId: typeof flow.controllerId === "string" ? flow.controllerId : undefined,
     ownerKey: typeof flow.ownerKey === "string" ? flow.ownerKey : undefined,
     goal: typeof flow.goal === "string" ? flow.goal : undefined,
     status: String(flow.status ?? "unknown"),
@@ -95,12 +98,16 @@ export function buildWorkerSnapshot(input: {
   inboxCount: number;
   backlogCount: number;
   webhookEvents: { source: string }[];
+  routingAttempts: { failureMode: string; complianceStatus: string; status: string }[];
   generatedAt: string;
 }): WorkerSnapshot {
   const bySource = input.webhookEvents.reduce<Record<string, number>>((counts, event) => {
     counts[event.source] = (counts[event.source] ?? 0) + 1;
     return counts;
   }, {});
+  const routingFailures = input.routingAttempts.filter((attempt) => attempt.failureMode !== "none").length;
+  const routingPending = input.routingAttempts.filter((attempt) => attempt.status === "awaiting_completion").length;
+  const routingCompliant = input.routingAttempts.filter((attempt) => attempt.complianceStatus === "compliant").length;
 
   return WorkerSnapshotSchema.parse({
     generatedAt: input.generatedAt,
@@ -114,6 +121,12 @@ export function buildWorkerSnapshot(input: {
     ingress: {
       total: input.webhookEvents.length,
       bySource,
+    },
+    routing: {
+      total: input.routingAttempts.length,
+      failures: routingFailures,
+      pending: routingPending,
+      compliant: routingCompliant,
     },
   });
 }

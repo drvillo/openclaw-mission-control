@@ -56,6 +56,7 @@ export const RuntimeTaskSchema = z.object({
   runId: z.string().min(1).optional(),
   deliveryStatus: z.string().min(1).optional(),
   terminalSummary: z.string().min(1).optional(),
+  terminalOutcome: z.enum(["succeeded", "blocked"]).nullable().optional(),
   createdAt: z.number().int().nullable().optional(),
   startedAt: z.number().int().nullable().optional(),
   endedAt: z.number().int().nullable().optional(),
@@ -67,6 +68,8 @@ export const RuntimeTaskSchema = z.object({
 
 export const TaskFlowSchema = z.object({
   flowId: z.string().min(1),
+  syncMode: z.string().min(1).optional(),
+  controllerId: z.string().min(1).optional(),
   ownerKey: z.string().min(1).optional(),
   goal: z.string().min(1).optional(),
   status: z.string().min(1),
@@ -103,7 +106,16 @@ export const MemoryHealthSchema = z.object({
   latestDaily: z.string().nullable(),
   qmdHealthy: z.boolean(),
   qmdMessage: z.string().min(1),
-  status: z.enum(["ok", "warning", "error"]),
+  status: z.enum(["ok", "daily_missing", "path_misconfigured", "qmd_unhealthy", "missing_agents_md", "missing_memory_md", "write_failed"]),
+  memoryScope: z.enum(["shared", "local"]).optional(),
+  pathStatus: z.enum(["ok", "misconfigured", "missing_link", "not_applicable"]).optional(),
+  pathMessage: z.string().min(1).optional(),
+  canonicalMemoryRoot: z.string().min(1).optional(),
+  memoryDirPath: z.string().min(1).optional(),
+  memoryFilePath: z.string().min(1).optional(),
+  todayFilePath: z.string().min(1).optional(),
+  workspaceMemoryTarget: z.string().nullable().optional(),
+  workspaceMemoryFileTarget: z.string().nullable().optional(),
   recordedAt: z.string().min(1),
   rawJson: z.string().min(1),
 });
@@ -146,6 +158,39 @@ export const CronRunSchema = z.object({
   rawJson: z.string().min(1),
 });
 
+export const RoutingAttemptSchema = z.object({
+  routingId: z.string().min(1),
+  recordedAt: z.string().min(1),
+  sourceAgent: z.string().min(1),
+  sourceSessionId: z.string().min(1),
+  sourceMessageId: z.string().min(1),
+  requestGroupKey: z.string().min(1),
+  requestExcerpt: z.string().min(1),
+  policyRuleId: z.string().nullable().optional(),
+  policyDomain: z.string().nullable().optional(),
+  expectedTargetAgent: z.string().nullable().optional(),
+  actualTargetAgent: z.string().nullable().optional(),
+  mechanism: z.string().min(1),
+  toolCallId: z.string().nullable().optional(),
+  accepted: z.boolean().nullable().optional(),
+  childSessionKey: z.string().nullable().optional(),
+  childSessionId: z.string().nullable().optional(),
+  runId: z.string().nullable().optional(),
+  status: z.string().min(1),
+  completionSummary: z.string().nullable().optional(),
+  failureMode: z.enum([
+    "none",
+    "wrong_tool",
+    "incomplete_turn",
+    "accepted_no_completion",
+    "redundant_reconfirmation",
+    "direct_fallback",
+  ]),
+  recoveryMode: z.enum(["none", "auto_recovered", "user_reprompted", "fallback_direct_exec"]),
+  complianceStatus: z.enum(["compliant", "violation", "fallback", "unknown"]),
+  rawJson: z.string().min(1),
+});
+
 export const WorkerSnapshotSchema = z.object({
   generatedAt: z.string().min(1),
   tasks: z.object({
@@ -159,6 +204,12 @@ export const WorkerSnapshotSchema = z.object({
     total: z.number().int().nonnegative(),
     bySource: z.record(z.string(), z.number().int().nonnegative()),
   }),
+  routing: z.object({
+    total: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative(),
+    compliant: z.number().int().nonnegative(),
+  }),
 });
 
 export type FlowRoute = z.infer<typeof FlowRouteSchema>;
@@ -170,4 +221,5 @@ export type AuditFinding = z.infer<typeof AuditFindingSchema>;
 export type MemoryHealth = z.infer<typeof MemoryHealthSchema>;
 export type CronJob = z.infer<typeof CronJobSchema>;
 export type CronRun = z.infer<typeof CronRunSchema>;
+export type RoutingAttempt = z.infer<typeof RoutingAttemptSchema>;
 export type WorkerSnapshot = z.infer<typeof WorkerSnapshotSchema>;

@@ -48,6 +48,7 @@ export const runtimeTasks = sqliteTable("runtime_tasks", {
   runId: text("run_id"),
   deliveryStatus: text("delivery_status"),
   terminalSummary: text("terminal_summary"),
+  terminalOutcome: text("terminal_outcome"),
   createdAt: integer("created_at"),
   startedAt: integer("started_at"),
   endedAt: integer("ended_at"),
@@ -59,6 +60,8 @@ export const runtimeTasks = sqliteTable("runtime_tasks", {
 
 export const taskFlows = sqliteTable("task_flows", {
   flowId: text("flow_id").primaryKey(),
+  syncMode: text("sync_mode"),
+  controllerId: text("controller_id"),
   ownerKey: text("owner_key"),
   goal: text("goal"),
   status: text("status").notNull(),
@@ -135,5 +138,31 @@ export const cronRuns = sqliteTable("cron_runs", {
   model: text("model"),
   provider: text("provider"),
   recordedAt: text("recorded_at").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const routingAttempts = sqliteTable("routing_attempts", {
+  routingId: text("routing_id").primaryKey(),
+  recordedAt: text("recorded_at").notNull(),
+  sourceAgent: text("source_agent").notNull(),
+  sourceSessionId: text("source_session_id").notNull(),
+  sourceMessageId: text("source_message_id").notNull(),
+  requestGroupKey: text("request_group_key").notNull(),
+  requestExcerpt: text("request_excerpt").notNull(),
+  policyRuleId: text("policy_rule_id"),
+  policyDomain: text("policy_domain"),
+  expectedTargetAgent: text("expected_target_agent"),
+  actualTargetAgent: text("actual_target_agent"),
+  mechanism: text("mechanism").notNull(),
+  toolCallId: text("tool_call_id"),
+  accepted: integer("accepted", { mode: "boolean" }),
+  childSessionKey: text("child_session_key"),
+  childSessionId: text("child_session_id"),
+  runId: text("run_id"),
+  status: text("status").notNull(),
+  completionSummary: text("completion_summary"),
+  failureMode: text("failure_mode").notNull(),
+  recoveryMode: text("recovery_mode").notNull(),
+  complianceStatus: text("compliance_status").notNull(),
   rawJson: text("raw_json").notNull(),
 });

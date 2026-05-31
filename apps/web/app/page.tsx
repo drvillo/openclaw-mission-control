@@ -1,85 +1,194 @@
+import type { ReactNode } from "react";
 import { ActionButton } from "./components/action-button";
+import { MeetingsIndex } from "./components/meetings-index";
+import { MyntView } from "./components/mynt-view";
+import { CronRunsPanel, RuntimeTasksPanel, TaskFlowsPanel } from "./components/operations-panels";
+import { RoutingPanel } from "./components/routing-panel";
+import { TasksBoard } from "./components/tasks-board";
+import { WorkspaceShell, type WorkspaceId } from "./components/workspace-shell";
+import { formatDisplayDate, formatDisplayDateTime } from "./lib/date-format";
 import { loadDashboardState } from "./lib/mission-control";
+import { loadMeetingIndex } from "./lib/meetings";
+import { buildMyntIndex } from "./lib/mynt";
+import { loadObsidianTaskBoard } from "./lib/openclaw";
 
-function formatEpoch(epochMs: number | null) {
-  if (!epochMs) {
-    return "none";
-  }
-  return new Date(epochMs).toLocaleString("en-GB", { hour12: false });
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+function formatDateTime(value: string | number | null) {
+  return formatDisplayDateTime(value);
 }
 
-export default function HomePage() {
+function formatDate(value: string | null) {
+  return formatDisplayDate(value);
+}
+
+function MetricCard({
+  label,
+  value,
+  caption,
+  detail,
+}: {
+  label: string;
+  value: string | number;
+  caption: string;
+  detail?: string;
+}) {
+  return (
+    <article className="card">
+      <h2>{label}</h2>
+      <p className="metric">{value}</p>
+      <p className="caption">{caption}</p>
+      {detail ? <p className="detail">{detail}</p> : null}
+    </article>
+  );
+}
+
+function Panel({
+  title,
+  copy,
+  children,
+}: {
+  title: string;
+  copy?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>{title}</h2>
+          {copy ? <p className="panel-copy">{copy}</p> : null}
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+export async function MissionControlPage({
+  activeWorkspace = "work",
+  selectedMeetingId,
+  focusedItemId,
+  focusedTime,
+  expandedPersonId,
+}: {
+  activeWorkspace?: WorkspaceId;
+  selectedMeetingId?: string;
+  focusedItemId?: string;
+  focusedTime?: string;
+  expandedPersonId?: string;
+}) {
   const state = loadDashboardState();
+  const taskBoard = await loadObsidianTaskBoard();
+  const meetingIndex = loadMeetingIndex();
+  const myntIndex = buildMyntIndex(meetingIndex, taskBoard);
   const snapshot = state.snapshot;
 
-  return (
-    <main className="page-shell">
-      <section className="hero">
-        <p className="eyebrow">Tailnet Admin Surface</p>
-        <h1>OpenClaw Mission Control</h1>
-        <p className="intro">
-          A derived operational view over Obsidian tasks, OpenClaw TaskFlows, webhook ingress, and system health.
-        </p>
+  const myWork = (
+    <div className="workspace-stack">
+      <section className="workspace-hero">
+        <div>
+          <p className="eyebrow">Personal Workflow</p>
+          <h2>My work</h2>
+          <p className="intro">Tasks reconstructed from the canonical Obsidian board, with filtering, drag/drop status moves, and detail editing.</p>
+        </div>
       </section>
 
       <section className="grid">
-        <article className="card">
-          <h2>Task Board</h2>
-          <p className="metric">{snapshot.tasks.inbox}</p>
-          <p className="caption">active inbox tasks</p>
-          <p className="detail">Backlog: {snapshot.tasks.backlog}</p>
-        </article>
-
-        <article className="card">
-          <h2>Flow Snapshot</h2>
-          <p className="metric">{snapshot.tasks.flows}</p>
-          <p className="caption">tracked TaskFlows</p>
-          <p className="detail">Audit findings: {snapshot.tasks.findings}</p>
-        </article>
-
-        <article className="card">
-          <h2>Ingress Visibility</h2>
-          <p className="metric">{snapshot.ingress.total}</p>
-          <p className="caption">logged inbound events</p>
-          <div className="event-list">
-            {Object.entries(snapshot.ingress.bySource).map(([source, count]) => (
-              <div key={source} className="event-row">
-                <span>{source}</span>
-                <strong>{count}</strong>
-              </div>
-            ))}
-            {Object.keys(snapshot.ingress.bySource).length === 0 ? (
-              <div className="event-row">
-                <span>none</span>
-                <strong>0</strong>
-              </div>
-            ) : null}
-          </div>
-        </article>
+        <MetricCard label="Inbox" value={snapshot.tasks.inbox} caption="active inbox tasks" detail={`Backlog: ${snapshot.tasks.backlog}`} />
+        <MetricCard label="Board" value={taskBoard.tasks.length} caption="loaded Obsidian tasks" detail={`${snapshot.tasks.count} tasks in derived state`} />
+        <MetricCard label="Flows" value={snapshot.tasks.flows} caption="tracked TaskFlows" detail={`${snapshot.tasks.findings} audit findings`} />
+        <MetricCard label="Meetings" value={meetingIndex.meetings.length} caption="Fathom transcripts indexed" detail={`${meetingIndex.participants.length} participants`} />
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Operator Actions</h2>
-            <p className="panel-copy">Run maintenance preview, reconciliation diagnostics, refresh the derived state, and operate on individual tasks and flows.</p>
-          </div>
-          <div className="action-row">
-            <ActionButton endpoint="/api/actions/refresh" label="Refresh state" />
-            <ActionButton endpoint="/api/actions/maintenance" label="Preview maintenance" />
-            <ActionButton endpoint="/api/actions/reconcile-preview" label="Preview reconciliation" />
-            <ActionButton endpoint="/api/actions/memory-doctor" label="Run memory doctor" />
-          </div>
+      <Panel title="Obsidian Tasks" copy="Live kanban view reconstructed from the canonical Obsidian task board and detail notes.">
+        <TasksBoard tasks={taskBoard.tasks} />
+      </Panel>
+    </div>
+  );
+
+  const myMeetings = (
+    <div className="workspace-stack">
+      <section className="workspace-hero">
+        <div>
+          <p className="eyebrow">Meeting Memory</p>
+          <h2>My meetings</h2>
+          <p className="intro">Read-only metadata index for Fathom recordings stored in Obsidian. Search by participant, title, date, month, or recording id.</p>
         </div>
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Nightly Improvement Loop</h2>
-            <p className="panel-copy">Cron visibility for the daily self-improvement review and related scheduled system work.</p>
-          </div>
+      <Panel title="Fathom Recordings" copy={`Source: ${meetingIndex.root}`}>
+        <MeetingsIndex
+          index={meetingIndex}
+          selectedMeetingId={selectedMeetingId}
+          focusedItemId={focusedItemId}
+          focusedTime={focusedTime}
+          openOnLoad={Boolean(selectedMeetingId)}
+        />
+      </Panel>
+    </div>
+  );
+
+  const mynt = (
+    <div className="workspace-stack">
+      <section className="workspace-hero">
+        <div>
+          <p className="eyebrow">Accountability</p>
+          <h2>Accountability Map</h2>
+          <p className="intro">People ranked by assigned actions and owned decisions extracted from Fathom meeting notes, with identity curation and archival state kept in Mission Control JSON.</p>
         </div>
+      </section>
+
+      <section className="grid">
+        <MetricCard label="People" value={myntIndex.peopleWithSelf.length} caption="responsible people" detail={`${myntIndex.hiddenSelfCount} self-owned items behind toggle`} />
+        <MetricCard label="Actions" value={myntIndex.items.filter((item) => item.kind === "action" && !item.archived).length} caption="unarchived action owners" detail={`${myntIndex.items.filter((item) => item.kind === "action" && item.archived).length} archived`} />
+        <MetricCard label="Decisions" value={myntIndex.items.filter((item) => item.kind === "decision" && !item.archived).length} caption="unarchived decision owners" detail={`${myntIndex.items.filter((item) => item.kind === "decision" && item.archived).length} archived`} />
+        <MetricCard label="Identity" value={myntIndex.identities.length} caption="curated identities" detail={`${myntIndex.duplicates.length} potential duplicate strings`} />
+      </section>
+
+      <Panel title="People, Actions, Decisions" copy={`Source: ${meetingIndex.root}`}>
+        <MyntView index={myntIndex} expandedPersonId={expandedPersonId} />
+      </Panel>
+    </div>
+  );
+
+  const fonkeyOps = (
+    <div className="workspace-stack">
+      <section className="workspace-hero workspace-hero-ops">
+        <div>
+          <p className="eyebrow">Internal System Visibility</p>
+          <h2>Fonkey Ops</h2>
+          <p className="intro">Routing evidence, runtime work, durable flows, cron, ingress, audit, memory health, and state roots.</p>
+        </div>
+        <div className="action-row">
+          <ActionButton endpoint="/api/actions/refresh" label="Refresh state" />
+          <ActionButton endpoint="/api/actions/maintenance" label="Preview maintenance" />
+          <ActionButton endpoint="/api/actions/reconcile-preview" label="Preview reconciliation" />
+          <ActionButton endpoint="/api/actions/memory-doctor" label="Run memory doctor" />
+        </div>
+      </section>
+
+      <section className="grid">
+        <MetricCard label="Ingress" value={snapshot.ingress.total} caption="logged inbound events" detail={`${Object.keys(snapshot.ingress.bySource).length} sources`} />
+        <MetricCard
+          label="Routing"
+          value={snapshot.routing.total}
+          caption="normalized routing attempts"
+          detail={`Failures: ${snapshot.routing.failures} · Pending: ${snapshot.routing.pending} · Compliant: ${snapshot.routing.compliant}`}
+        />
+        <MetricCard label="Runtime" value={state.runtimeTasks.length} caption="recent background tasks" detail={`${state.flows.length} recent flows`} />
+        <MetricCard label="Audit" value={state.findings.length} caption="loaded findings" detail={`${state.memoryHealth.length} memory scopes`} />
+      </section>
+
+      <Panel
+        title="Agent Routing"
+        copy="Request-level routing evidence from `main` session logs, including misroutes, recovery prompts, accepted spawns, direct execution fallback, and child completion state."
+      >
+        <RoutingPanel groups={state.routingGroups} />
+      </Panel>
+
+      <Panel title="Nightly Improvement Loop" copy="Cron visibility for the daily self-improvement review and related scheduled system work.">
         <div className="table-shell">
           <table>
             <thead>
@@ -100,8 +209,8 @@ export default function HomePage() {
                   <td>{job.agentId}</td>
                   <td>{job.enabled ? "yes" : "no"}</td>
                   <td>{job.scheduleLabel}</td>
-                  <td>{formatEpoch(job.lastRunAtMs)}</td>
-                  <td>{formatEpoch(job.nextRunAtMs)}</td>
+                  <td>{formatDateTime(job.lastRunAtMs)}</td>
+                  <td>{formatDateTime(job.nextRunAtMs)}</td>
                   <td>{job.lastRunStatus ?? "none"}</td>
                 </tr>
               ))}
@@ -113,205 +222,21 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Cron Run History</h2>
-            <p className="panel-copy">Recent execution history, including the nightly recommendation job and task-board hygiene sweeps.</p>
-          </div>
-        </div>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Job</th>
-                <th>Status</th>
-                <th>Action</th>
-                <th>Delivery</th>
-                <th>Model</th>
-                <th>Summary</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.cronRuns.map((run) => (
-                <tr key={run.runId}>
-                  <td>{formatEpoch(run.ts)}</td>
-                  <td>{run.jobId}</td>
-                  <td>{run.status}</td>
-                  <td>{run.action}</td>
-                  <td>{run.deliveryStatus ?? "none"}</td>
-                  <td>{run.model ?? "none"}</td>
-                  <td>{run.summary?.slice(0, 180) ?? "none"}</td>
-                </tr>
-              ))}
-              {state.cronRuns.length === 0 ? (
-                <tr>
-                  <td colSpan={7}>No cron run history tracked yet.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Panel title="Cron Run History" copy="Recent execution history, including the nightly recommendation job and task-board hygiene sweeps.">
+        <CronRunsPanel items={state.cronRuns} />
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Obsidian Tasks</h2>
-            <p className="panel-copy">SQLite-backed task snapshots from the canonical Obsidian task board.</p>
-          </div>
-        </div>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>Task</th>
-                <th>Board</th>
-                <th>Status</th>
-                <th>Assignee</th>
-                <th>Agent status</th>
-                <th>Flow</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.tasks.map((task) => (
-                <tr key={task.id}>
-                  <td>{task.title}</td>
-                  <td>{task.board}</td>
-                  <td>{task.status}</td>
-                  <td>{task.assignee}</td>
-                  <td>{task.agentStatus}</td>
-                  <td>{task.flowId ?? "none"}</td>
-                </tr>
-              ))}
-              {state.tasks.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No task snapshots loaded.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Panel title="Runtime Tasks" copy="Live OpenClaw background tasks with cancellation controls for active work.">
+        <RuntimeTasksPanel items={state.runtimeTasks} />
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Runtime Tasks</h2>
-            <p className="panel-copy">Live OpenClaw background tasks with cancellation controls for active work.</p>
-          </div>
-        </div>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>Task ID</th>
-                <th>Status</th>
-                <th>Runtime</th>
-                <th>Agent</th>
-                <th>Label</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.runtimeTasks.map((task) => {
-                const cancellable = task.status === "queued" || task.status === "running";
-                return (
-                  <tr key={task.taskId}>
-                    <td>{task.taskId}</td>
-                    <td>{task.status}</td>
-                    <td>{task.runtime ?? "none"}</td>
-                    <td>{task.agentId ?? "none"}</td>
-                    <td>{task.label ?? "none"}</td>
-                    <td>
-                      {cancellable ? (
-                        <ActionButton
-                          endpoint="/api/actions/cancel-task"
-                          label="Cancel"
-                          body={{ lookup: task.taskId }}
-                          confirmText={`Cancel runtime task ${task.taskId}?`}
-                        />
-                      ) : (
-                        <span className="muted">not active</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {state.runtimeTasks.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No runtime tasks loaded.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Panel title="TaskFlows" copy="Durable flow state for webhook-driven work, with controller-aware operator actions where the backing flow supports them.">
+        <TaskFlowsPanel items={state.flows} />
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>TaskFlows</h2>
-            <p className="panel-copy">Durable flow state for webhook-driven work.</p>
-          </div>
-        </div>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>Flow ID</th>
-                <th>Status</th>
-                <th>Owner</th>
-                <th>Goal</th>
-                <th>Step</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.flows.map((flow) => {
-                const cancellable = flow.status === "queued" || flow.status === "running" || flow.status === "waiting";
-                return (
-                  <tr key={flow.flowId}>
-                    <td>{flow.flowId}</td>
-                    <td>{flow.status}</td>
-                    <td>{flow.ownerKey ?? "none"}</td>
-                    <td>{flow.goal ?? "none"}</td>
-                    <td>{flow.currentStep ?? "none"}</td>
-                    <td>
-                      {cancellable ? (
-                        <ActionButton
-                          endpoint="/api/actions/cancel-flow"
-                          label="Cancel"
-                          body={{ lookup: flow.flowId }}
-                          confirmText={`Cancel flow ${flow.flowId}?`}
-                        />
-                      ) : (
-                        <span className="muted">not active</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {state.flows.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No TaskFlows are currently tracked.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Webhook Events</h2>
-            <p className="panel-copy">Normalized event log from Mission Control state, with replay for supported sources.</p>
-          </div>
-        </div>
+      <Panel title="Webhook Events" copy="Normalized event log from Mission Control state, with replay for supported sources.">
         <div className="table-shell">
           <table>
             <thead>
@@ -326,10 +251,10 @@ export default function HomePage() {
             </thead>
             <tbody>
               {state.events.map((event) => {
-                const replayable = event.source === "fathom" && Boolean(event.payloadPath);
+                const replayable = (event.source === "fathom" || event.source === "agentmail") && Boolean(event.payloadPath);
                 return (
                   <tr key={event.eventId}>
-                    <td>{event.recordedAt}</td>
+                    <td>{formatDateTime(event.recordedAt)}</td>
                     <td>{event.source}</td>
                     <td>{event.eventType}</td>
                     <td>{event.status}</td>
@@ -357,15 +282,9 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Audit Findings</h2>
-            <p className="panel-copy">Health and maintenance findings pulled from `openclaw tasks audit`.</p>
-          </div>
-        </div>
+      <Panel title="Audit Findings" copy="Health and maintenance findings pulled from `openclaw tasks audit`.">
         <div className="table-shell">
           <table>
             <thead>
@@ -393,23 +312,17 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Memory Health</h2>
-            <p className="panel-copy">Workspace memory doctor status, including daily memory coverage and QMD availability.</p>
-          </div>
-        </div>
+      <Panel title="Memory Health" copy="Workspace memory doctor status, including daily memory coverage and QMD availability.">
         <div className="table-shell">
           <table>
             <thead>
               <tr>
                 <th>Workspace</th>
+                <th>Scope</th>
                 <th>Status</th>
-                <th>AGENTS.md</th>
-                <th>MEMORY.md</th>
+                <th>Path</th>
                 <th>Today</th>
                 <th>Latest daily</th>
                 <th>QMD</th>
@@ -419,11 +332,11 @@ export default function HomePage() {
               {state.memoryHealth.map((workspace) => (
                 <tr key={workspace.workspaceId}>
                   <td>{workspace.workspaceId}</td>
+                  <td>{workspace.memoryScope}</td>
                   <td>{workspace.status}</td>
-                  <td>{workspace.hasAgentsMd ? "yes" : "no"}</td>
-                  <td>{workspace.hasMemoryMd ? "yes" : "no"}</td>
+                  <td>{workspace.pathStatus === "ok" ? "ok" : workspace.pathMessage}</td>
                   <td>{workspace.hasTodayDaily ? "yes" : "no"}</td>
-                  <td>{workspace.latestDaily ?? "none"}</td>
+                  <td>{formatDate(workspace.latestDaily)}</td>
                   <td>{workspace.qmdHealthy ? "ok" : workspace.qmdMessage}</td>
                 </tr>
               ))}
@@ -435,17 +348,38 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
-      <section className="panel">
-        <h2>State Roots</h2>
-        <ul>
-          <li>OpenClaw: <code>{state.roots.openclawHome}</code></li>
-          <li>Obsidian tasks: <code>{state.roots.tasksRoot}</code></li>
-          <li>Mission Control state: <code>{state.roots.stateDir}</code></li>
-          <li>Mission Control DB: <code>{state.roots.dbPath}</code></li>
+      <Panel title="State Roots">
+        <ul className="roots-list">
+          <li>
+            <span>OpenClaw</span>
+            <code>{state.roots.openclawHome}</code>
+          </li>
+          <li>
+            <span>Obsidian tasks</span>
+            <code>{state.roots.tasksRoot}</code>
+          </li>
+          <li>
+            <span>Mission Control state</span>
+            <code>{state.roots.stateDir}</code>
+          </li>
+          <li>
+            <span>Mission Control DB</span>
+            <code>{state.roots.dbPath}</code>
+          </li>
         </ul>
-      </section>
+      </Panel>
+    </div>
+  );
+
+  return (
+    <main className="page-shell">
+      <WorkspaceShell activeWorkspace={activeWorkspace} work={myWork} meetings={myMeetings} mynt={mynt} ops={fonkeyOps} />
     </main>
   );
+}
+
+export default async function HomePage() {
+  return <MissionControlPage activeWorkspace="work" />;
 }
