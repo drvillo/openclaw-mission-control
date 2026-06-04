@@ -2,25 +2,40 @@
 
 import type { ReactNode } from "react";
 
-export type WorkspaceId = "work" | "meetings" | "accountability" | "ops";
+export type WorkspaceId = "work" | "meetings" | "my-accountability" | "accountability" | "identity" | "ops";
 
 type WorkspaceShellProps = {
   activeWorkspace: WorkspaceId;
   work: ReactNode;
   meetings: ReactNode;
+  myAccountability: ReactNode;
   mynt: ReactNode;
+  identity: ReactNode;
   ops: ReactNode;
 };
 
 const WORKSPACES: { id: WorkspaceId; label: string; href: string }[] = [
   { id: "work", label: "My work", href: "/work" },
   { id: "meetings", label: "My meetings", href: "/meetings" },
+  { id: "my-accountability", label: "My Accountability", href: "/my-accountability" },
   { id: "accountability", label: "Accountability Map", href: "/accountability" },
+  { id: "identity", label: "Identity Admin", href: "/identity-admin" },
   { id: "ops", label: "Fonkey Ops", href: "/ops" },
 ];
 
-export function WorkspaceShell({ activeWorkspace, work, meetings, mynt, ops }: WorkspaceShellProps) {
-  const activeContent = activeWorkspace === "work" ? work : activeWorkspace === "meetings" ? meetings : activeWorkspace === "accountability" ? mynt : ops;
+export function WorkspaceShell({ activeWorkspace, work, meetings, myAccountability, mynt, identity, ops }: WorkspaceShellProps) {
+  const activeContent =
+    activeWorkspace === "work"
+      ? work
+      : activeWorkspace === "meetings"
+        ? meetings
+        : activeWorkspace === "my-accountability"
+          ? myAccountability
+          : activeWorkspace === "accountability"
+            ? mynt
+            : activeWorkspace === "identity"
+              ? identity
+              : ops;
 
   return (
     <div className="workspace-shell">

@@ -166,3 +166,187 @@ export const routingAttempts = sqliteTable("routing_attempts", {
   complianceStatus: text("compliance_status").notNull(),
   rawJson: text("raw_json").notNull(),
 });
+
+export const sourceDocuments = sqliteTable("source_documents", {
+  sourceDocumentId: text("source_document_id").primaryKey(),
+  sourceType: text("source_type").notNull(),
+  canonicalSourcePath: text("canonical_source_path").notNull(),
+  obsidianRef: text("obsidian_ref").notNull(),
+  absolutePath: text("absolute_path").notNull(),
+  externalSourceId: text("external_source_id"),
+  playbackUrl: text("playback_url"),
+  shareUrl: text("share_url"),
+  currentVersionId: text("current_version_id"),
+  lastIngestedAt: text("last_ingested_at"),
+  lastIngestionStatus: text("last_ingestion_status").notNull(),
+  lastIngestionError: text("last_ingestion_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const documentVersions = sqliteTable("document_versions", {
+  documentVersionId: text("document_version_id").primaryKey(),
+  sourceDocumentId: text("source_document_id").notNull(),
+  contentHash: text("content_hash").notNull(),
+  rawMarkdown: text("raw_markdown").notNull(),
+  pageSchemaVersion: text("page_schema_version"),
+  capturedAt: text("captured_at").notNull(),
+  processedAt: text("processed_at"),
+  extractionRunId: text("extraction_run_id"),
+});
+
+export const extractionRuns = sqliteTable("extraction_runs", {
+  extractionRunId: text("extraction_run_id").primaryKey(),
+  sourceDocumentId: text("source_document_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  providerRunId: text("provider_run_id"),
+  flowId: text("flow_id"),
+  extractor: text("extractor"),
+  model: text("model"),
+  promptHash: text("prompt_hash"),
+  transcriptSha256: text("transcript_sha256"),
+  status: text("status").notNull(),
+  errorMessage: text("error_message"),
+  processedAt: text("processed_at"),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const meetings = sqliteTable("meetings", {
+  meetingId: text("meeting_id").primaryKey(),
+  sourceDocumentId: text("source_document_id").notNull(),
+  currentDocumentVersionId: text("current_document_version_id").notNull(),
+  recordingId: text("recording_id"),
+  sourceType: text("source_type").notNull(),
+  title: text("title").notNull(),
+  startedAt: text("started_at"),
+  meetingDay: text("meeting_day"),
+  meetingMonth: text("meeting_month"),
+  playbackUrl: text("playback_url"),
+  shareUrl: text("share_url"),
+  transcriptSourcePath: text("transcript_source_path").notNull(),
+  transcriptObsidianRef: text("transcript_obsidian_ref").notNull(),
+  participantCount: integer("participant_count").notNull().default(0),
+  actionCount: integer("action_count").notNull().default(0),
+  decisionCount: integer("decision_count").notNull().default(0),
+  lastIngestedAt: text("last_ingested_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const meetingParticipants = sqliteTable("meeting_participants", {
+  meetingParticipantId: text("meeting_participant_id").primaryKey(),
+  meetingId: text("meeting_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  rawName: text("raw_name").notNull(),
+  participantKey: text("participant_key"),
+  identityId: text("identity_id"),
+});
+
+export const identities = sqliteTable("identities", {
+  identityId: text("identity_id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  primaryEmail: text("primary_email"),
+  isSelf: integer("is_self", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const identityAliases = sqliteTable("identity_aliases", {
+  identityAliasId: text("identity_alias_id").primaryKey(),
+  identityId: text("identity_id").notNull(),
+  aliasType: text("alias_type").notNull(),
+  aliasValue: text("alias_value").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const transcriptSegments = sqliteTable("transcript_segments", {
+  transcriptSegmentId: text("transcript_segment_id").primaryKey(),
+  meetingId: text("meeting_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  startTimestamp: text("start_timestamp").notNull(),
+  endTimestamp: text("end_timestamp"),
+  speakerRaw: text("speaker_raw").notNull(),
+  speakerIdentityId: text("speaker_identity_id"),
+  text: text("text").notNull(),
+});
+
+export const actionAssertions = sqliteTable("action_assertions", {
+  actionAssertionId: text("action_assertion_id").primaryKey(),
+  extractionRunId: text("extraction_run_id").notNull(),
+  meetingId: text("meeting_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  externalAssertionId: text("external_assertion_id"),
+  label: text("label").notNull(),
+  status: text("status"),
+  taskId: text("task_id"),
+  detailsRef: text("details_ref"),
+  rawAssignee: text("raw_assignee"),
+  dueDate: text("due_date"),
+  dueText: text("due_text"),
+  confidence: text("confidence"),
+  score: integer("score"),
+  summary: text("summary").notNull(),
+  evidenceText: text("evidence_text"),
+  evidenceTargetTime: text("evidence_target_time"),
+  fingerprint: text("fingerprint").notNull(),
+  sequence: integer("sequence").notNull(),
+  reviewStatus: text("review_status").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const decisionAssertions = sqliteTable("decision_assertions", {
+  decisionAssertionId: text("decision_assertion_id").primaryKey(),
+  extractionRunId: text("extraction_run_id").notNull(),
+  meetingId: text("meeting_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  externalAssertionId: text("external_assertion_id"),
+  label: text("label").notNull(),
+  taskId: text("task_id"),
+  detailsRef: text("details_ref"),
+  rawOwner: text("raw_owner"),
+  confidence: text("confidence"),
+  score: integer("score"),
+  summary: text("summary").notNull(),
+  evidenceText: text("evidence_text"),
+  evidenceTargetTime: text("evidence_target_time"),
+  fingerprint: text("fingerprint").notNull(),
+  sequence: integer("sequence").notNull(),
+  reviewStatus: text("review_status").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const evidenceLinks = sqliteTable("evidence_links", {
+  evidenceLinkId: text("evidence_link_id").primaryKey(),
+  assertionKind: text("assertion_kind").notNull(),
+  assertionId: text("assertion_id").notNull(),
+  transcriptSegmentId: text("transcript_segment_id"),
+  timestamp: text("timestamp").notNull(),
+  quoteText: text("quote_text"),
+  sequence: integer("sequence").notNull(),
+});
+
+export const reviewEvents = sqliteTable("review_events", {
+  reviewEventId: text("review_event_id").primaryKey(),
+  assertionKind: text("assertion_kind").notNull(),
+  assertionId: text("assertion_id").notNull(),
+  outcome: text("outcome").notNull(),
+  targetObjectId: text("target_object_id"),
+  reviewer: text("reviewer"),
+  reviewedAt: text("reviewed_at").notNull(),
+  note: text("note"),
+});
+
+export const meetingIngestionRuns = sqliteTable("meeting_ingestion_runs", {
+  ingestionRunId: text("ingestion_run_id").primaryKey(),
+  sourceDocumentId: text("source_document_id"),
+  canonicalSourcePath: text("canonical_source_path").notNull(),
+  contentHash: text("content_hash").notNull(),
+  status: text("status").notNull(),
+  message: text("message"),
+  documentVersionId: text("document_version_id"),
+  extractionRunId: text("extraction_run_id"),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+});

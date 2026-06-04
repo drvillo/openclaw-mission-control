@@ -1,5 +1,4 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { assert, test } from "vitest";
 import { buildMyntIndexFromState, previewMyntArchive, type MyntState } from "./mynt";
 import type { MeetingIndex, MeetingRecording } from "./meetings";
 import type { ObsidianBoardTask } from "./openclaw";
@@ -58,6 +57,8 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
     actions: [
       {
         kind: "action",
+        assertionId: "assertion-action-1",
+        reviewStatus: "needs_review",
         label: "C1",
         id: "action-1",
         status: "created",
@@ -76,6 +77,8 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
       },
       {
         kind: "action",
+        assertionId: "assertion-action-2",
+        reviewStatus: "accepted",
         label: "C2",
         id: "action-2",
         status: "created",
@@ -96,6 +99,8 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
     decisions: [
       {
         kind: "decision",
+        assertionId: "assertion-decision-1",
+        reviewStatus: "needs_review",
         label: "D1",
         id: "decision-1",
         status: null,
@@ -121,6 +126,9 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
   assert.equal(mynt.people[0].totalCount, 2);
   assert.equal(mynt.people[0].actionCount, 1);
   assert.equal(mynt.people[0].decisionCount, 1);
+  assert.equal(mynt.people[0].actions[0].assertionId, "assertion-action-1");
+  assert.equal(mynt.people[0].actions[0].reviewStatus, "needs_review");
+  assert.equal(mynt.people[0].decisions[0].assertionId, "assertion-decision-1");
   assert.equal(mynt.hiddenSelfCount, 1);
 });
 
@@ -131,6 +139,8 @@ test("buildMyntIndexFromState excludes archived item ids", () => {
         actions: [
           {
             kind: "action",
+            assertionId: "assertion-archived",
+            reviewStatus: "needs_review",
             label: "C1",
             id: "action-archived",
             status: "created",
@@ -165,6 +175,8 @@ test("identity alias matching resolves unique full-name aliases only", () => {
         actions: [
           {
             kind: "action",
+            assertionId: "assertion-alias",
+            reviewStatus: "needs_review",
             label: "C1",
             id: "action-alias",
             status: "created",
@@ -200,6 +212,8 @@ test("buildMyntIndexFromState infers clear full-name identities without manual r
         actions: [
           {
             kind: "action",
+            assertionId: "assertion-david-1",
+            reviewStatus: "needs_review",
             label: "C1",
             id: "action-david-1",
             status: "created",
@@ -218,6 +232,8 @@ test("buildMyntIndexFromState infers clear full-name identities without manual r
           },
           {
             kind: "action",
+            assertionId: "assertion-david-2",
+            reviewStatus: "needs_review",
             label: "C2",
             id: "action-david-2",
             status: "created",
@@ -267,6 +283,8 @@ test("buildMyntIndexFromState keeps ambiguous single-token names for manual revi
         actions: [
           {
             kind: "action",
+            assertionId: "assertion-dave",
+            reviewStatus: "needs_review",
             label: "C1",
             id: "action-dave",
             status: "created",
@@ -313,6 +331,8 @@ test("previewMyntArchive counts older items and linked Fathom tasks", () => {
         actions: [
           {
             kind: "action",
+            assertionId: "assertion-old",
+            reviewStatus: "needs_review",
             label: "C1",
             id: "action-old",
             status: "created",

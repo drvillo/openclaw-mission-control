@@ -37,6 +37,8 @@ export type MyntPersonRef = {
 export type MyntItem = {
   id: string;
   kind: "action" | "decision";
+  assertionId: string | null;
+  reviewStatus: "needs_review" | "accepted";
   person: MyntPersonRef;
   summary: string;
   status: string | null;
@@ -46,6 +48,7 @@ export type MyntItem = {
   meetingId: string;
   meetingTitle: string;
   meetingDate: string;
+  meetingParticipants: string[];
   obsidianRef: string;
   playbackUrl: string | null;
   recordingId: string;
@@ -337,6 +340,8 @@ function toMyntItem(meeting: MeetingRecording, reviewItem: MeetingReviewItem, in
   return {
     id,
     kind: reviewItem.kind,
+    assertionId: reviewItem.assertionId,
+    reviewStatus: reviewItem.reviewStatus,
     person,
     summary: reviewItem.summary || reviewItem.label,
     status: reviewItem.status,
@@ -346,6 +351,7 @@ function toMyntItem(meeting: MeetingRecording, reviewItem: MeetingReviewItem, in
     meetingId: meeting.id,
     meetingTitle: meeting.title,
     meetingDate: meeting.date,
+    meetingParticipants: meeting.participants,
     obsidianRef: meeting.obsidianRef,
     playbackUrl: meeting.playbackUrl,
     recordingId: meeting.recordingId,
@@ -495,7 +501,7 @@ export function buildMyntIndexFromState(index: MeetingIndex, state: MyntState, t
   ]).filter((item): item is MyntItem => Boolean(item));
   const activeItems = items.filter((item) => !item.archived);
   const peopleWithSelf = buildPeople(activeItems);
-  const people = effectiveState.showSelfDefault ? peopleWithSelf : peopleWithSelf.filter((person) => !person.isSelf);
+  const people = peopleWithSelf.filter((person) => !person.isSelf);
   return {
     statePath: MYNT_STATE_PATH,
     state: effectiveState,
@@ -540,6 +546,41 @@ export function approveMyntAlias(identityId: string, rawAlias: string, identityD
     identity.email = parsed.email;
   }
   identity.aliases = uniqueSorted([...identity.aliases, parsed.raw, parsed.displayName, parsed.email || ""]);
+  saveMyntState(state);
+  return identity;
+}
+
+export function updateMyntIdentityEmail(identityId: string, rawEmail: string, identityDisplayName?: string) {
+  const state = loadMyntState();
+  const email = normalizeActor(rawEmail).toLowerCase();
+  if (email && !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/u.test(email)) {
+    throw new Error("Enter a valid email address");
+  }
+  const conflictingIdentity = email ? state.identities.find((item) => item.email === email && item.id !== identityId) : null;
+  if (conflictingIdentity) {
+    throw new Error(`Email is already assigned to ${conflictingIdentity.displayName}`);
+  }
+
+  let identity = state.identities.find((item) => item.id === identityId || item.email === identityId);
+  const inferredEmail = parseActor(identityId)?.email;
+  if (!identity && (identityId.startsWith("name:") || inferredEmail)) {
+    const displayName = normalizeActor(identityDisplayName || (inferredEmail ? identityId : identityId.slice("name:".length)));
+    identity = {
+      id: identityId,
+      email: inferredEmail ?? "",
+      displayName,
+      aliases: uniqueSorted([displayName, inferredEmail ?? ""]),
+      inferred: true,
+    };
+    state.identities.push(identity);
+  }
+  if (!identity) {
+    throw new Error(`Unknown identity: ${identityId}`);
+  }
+
+  const previousEmail = identity.email;
+  identity.email = email;
+  identity.aliases = uniqueSorted([...identity.aliases.filter((alias) => alias.toLowerCase() !== previousEmail), email]);
   saveMyntState(state);
   return identity;
 }

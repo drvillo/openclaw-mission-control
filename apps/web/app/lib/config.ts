@@ -20,3 +20,4 @@ export const FATHOM_SYNC_SCRIPT = path.join(
 export const AGENTMAIL_ROUTER_SCRIPT = path.join(OPENCLAW_HOME, "workspace", "scripts", "agentmail_webhook_router.py");
 export const TASK_BOARD_WRAPPER = path.join(OPENCLAW_HOME, "workspace-task-ops-agent", "scripts", "task_board.py");
 export const INVOICE_AGENT_WRAPPER = path.join(OPENCLAW_HOME, "workspace-invoice-ops", "scripts", "invoice-agent");
+export const MISSION_CONTROL_MEETINGS_SOURCE = process.env.MISSION_CONTROL_MEETINGS_SOURCE ?? "db";

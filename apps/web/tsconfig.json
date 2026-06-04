@@ -3,9 +3,8 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM"],
-    "types": ["node"]
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
   },
   "include": ["app/**/*.ts", "app/**/*.tsx", "next-env.d.ts"],
   "exclude": ["node_modules"]
 }
-

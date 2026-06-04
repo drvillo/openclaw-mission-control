@@ -3,6 +3,7 @@
 import type { ReactNode, SyntheticEvent } from "react";
 import { startTransition, useEffect, useState } from "react";
 import { CompactSelect, type CompactSelectOption } from "./compact-select";
+import { KanbanBoard } from "./kanban-board";
 import { formatDisplayDate } from "../lib/date-format";
 
 type TaskIssue = {
@@ -298,7 +299,6 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
   const [createdThisWeekOnly, setCreatedThisWeekOnly] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft | null>(null);
-  const [activeDropStatus, setActiveDropStatus] = useState<string | null>(null);
   const [pendingMoveId, setPendingMoveId] = useState<string | null>(null);
   const [pendingActionIds, setPendingActionIds] = useState<Set<string>>(new Set());
   const [pendingBulkAction, setPendingBulkAction] = useState<string | null>(null);
@@ -381,13 +381,6 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
     setCreatedThisWeekOnly(false);
     setSearch("");
   }
-
-  const groupedTasks = STATUS_COLUMNS.map((column) => ({
-    ...column,
-    tasks: filteredTasks
-      .filter((task) => task.status === column.id)
-      .sort((left, right) => right.created_on.localeCompare(left.created_on) || right.id.localeCompare(left.id)),
-  }));
 
   const ownerOptions = toOptions(uniqueValues(items, "owner"), "All owners");
   const assigneeTypeOptions = toOptions(uniqueValues(items, "assignee_type"), "All assignee types");
@@ -474,7 +467,6 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
         setMessage(error instanceof Error ? error.message : String(error));
       } finally {
         setPendingMoveId(null);
-        setActiveDropStatus(null);
       }
     });
   }
@@ -716,33 +708,25 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
         {pendingMoveId ? <span>Saving move for {pendingMoveId}...</span> : null}
       </div>
 
-      <div className="tasks-board">
-        {groupedTasks.map((column) => {
-          const columnTaskIds = column.tasks.map((task) => task.id);
+      <KanbanBoard
+        columns={STATUS_COLUMNS}
+        items={filteredTasks}
+        getItemId={(task) => task.id}
+        getItemStatus={(task) => task.status as (typeof STATUS_COLUMNS)[number]["id"]}
+        sortItems={(left, right) => right.created_on.localeCompare(left.created_on) || right.id.localeCompare(left.id)}
+        onMove={(taskId, nextStatus) => void moveTask(taskId, nextStatus)}
+        canDragItem={(task) => pendingMoveId == null && !pendingActionIds.has(task.id)}
+        isItemPending={(task) => pendingMoveId === task.id}
+        cardWrapperClassName={(task) => (pendingMoveId === task.id ? "task-card-pending" : "")}
+        countLabel={(count) => `${count} task${count === 1 ? "" : "s"}`}
+        emptyText={(column) => (
+          <p>No tasks in {column.label.toLowerCase()}.</p>
+        )}
+        renderColumnActions={(column, columnTasks) => {
+          const columnTaskIds = columnTasks.map((task) => task.id);
           const columnActionDisabled = columnTaskIds.length === 0 || pendingBulkAction !== null;
           return (
-          <section
-            key={column.id}
-            className={`task-column ${activeDropStatus === column.id ? "task-column-active" : ""}`}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setActiveDropStatus(column.id);
-            }}
-            onDragLeave={() => {
-              setActiveDropStatus((current) => (current === column.id ? null : current));
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              const taskId = event.dataTransfer.getData("text/task-id");
-              void moveTask(taskId, column.id);
-            }}
-          >
-            <header className="task-column-header">
-              <div>
-                <h3>{column.label}</h3>
-                <p className="muted">{column.tasks.length} task{column.tasks.length === 1 ? "" : "s"}</p>
-              </div>
-              <div className="task-column-actions">
+            <>
                 {column.id === "next" ? (
                   <IconButton
                     label={`Mark all visible ${column.label.toLowerCase()} tasks done`}
@@ -753,7 +737,7 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                     onClick={() =>
                       void markTasksDone(
                         columnTaskIds,
-                        `Mark ${column.tasks.length} visible ${column.label.toLowerCase()} task${column.tasks.length === 1 ? "" : "s"} done?`,
+                        `Mark ${columnTasks.length} visible ${column.label.toLowerCase()} task${columnTasks.length === 1 ? "" : "s"} done?`,
                       )
                     }
                   />
@@ -767,24 +751,18 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                   onClick={() =>
                     void archiveTasks(
                       columnTaskIds,
-                      `Archive ${column.tasks.length} visible ${column.label.toLowerCase()} task${column.tasks.length === 1 ? "" : "s"}?`,
+                      `Archive ${columnTasks.length} visible ${column.label.toLowerCase()} task${columnTasks.length === 1 ? "" : "s"}?`,
                     )
                   }
                 />
-              </div>
-            </header>
-
-            <div className="task-column-body">
-              {column.tasks.map((task) => {
-                const taskActionDisabled = pendingActionIds.has(task.id) || pendingMoveId === task.id || pendingBulkAction !== null;
-                return (
+            </>
+          );
+        }}
+        renderCard={(task) => {
+          const taskActionDisabled = pendingActionIds.has(task.id) || pendingMoveId === task.id || pendingBulkAction !== null;
+          return (
                 <article
-                  key={task.id}
                   className={`task-card ${pendingMoveId === task.id ? "task-card-pending" : ""}`}
-                  draggable={pendingMoveId == null && !pendingActionIds.has(task.id)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData("text/task-id", task.id);
-                  }}
                   onClick={() => setSelectedTaskId(task.id)}
                 >
                   <div className="task-card-head">
@@ -825,19 +803,9 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                     {issuesLabel(task) ? <TaskBadge tone="error">{issuesLabel(task)}</TaskBadge> : null}
                   </div>
                 </article>
-                );
-              })}
-
-              {column.tasks.length === 0 ? (
-                <div className="task-column-empty">
-                  <p>No tasks in {column.label.toLowerCase()}.</p>
-                </div>
-              ) : null}
-            </div>
-          </section>
           );
-        })}
-      </div>
+        }}
+      />
 
       {selectedTask && draft ? (
         <div className="task-modal-backdrop" onClick={closeModal}>

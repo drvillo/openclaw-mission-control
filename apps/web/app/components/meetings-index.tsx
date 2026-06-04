@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ActionReassignControl, type ActionAssigneeIdentity } from "./action-reassign-control";
 import { CompactSelect, type CompactSelectOption } from "./compact-select";
 import { formatDisplayDate, formatDisplayDateTime } from "../lib/date-format";
 import type { MeetingDetail, MeetingIndex, MeetingRecording, MeetingReviewItem } from "../lib/meetings";
@@ -11,11 +12,18 @@ type MeetingsIndexProps = {
   focusedItemId?: string;
   focusedTime?: string;
   openOnLoad?: boolean;
+  pendingReviewOnly?: boolean;
+  assigneeIdentities: ActionAssigneeIdentity[];
 };
 
 type MeetingDetailResponse =
   | { ok: true; meeting?: MeetingDetail; transcript?: MeetingDetail }
   | { ok: false; error: string };
+
+type ActionResponse = { ok: true; summary: string; payload?: unknown } | { ok: false; error: string };
+type ReassignPayload = { reassigned?: number; assertionId?: string; assignee?: string };
+type ReviewOperation = "accept" | "reject";
+type ReviewPayloadItem = { kind: "action" | "decision"; assertionId: string };
 
 function formatDate(value: string) {
   return formatDisplayDate(value);
@@ -67,6 +75,37 @@ function CountBadges({ actions, decisions }: { actions: number; decisions: numbe
   );
 }
 
+function pendingReviewItems(items: MeetingReviewItem[]) {
+  return items.filter((item) => item.reviewStatus === "needs_review");
+}
+
+function reviewPayloadItems(items: MeetingReviewItem[]): ReviewPayloadItem[] {
+  return items
+    .filter((item): item is MeetingReviewItem & { assertionId: string } => Boolean(item.assertionId))
+    .map((item) => ({ kind: item.kind, assertionId: item.assertionId }));
+}
+
+function hasAcceptablePendingReview(items: MeetingReviewItem[]) {
+  return reviewPayloadItems(pendingReviewItems(items)).length > 0;
+}
+
+function reviewStatusLabel(status: MeetingReviewItem["reviewStatus"]) {
+  return status === "accepted" ? "Accepted" : "Needs Review";
+}
+
+function ReviewStatusBadge({ status }: { status: MeetingReviewItem["reviewStatus"] }) {
+  return (
+    <span className={`meeting-review-status meeting-review-status-${status}`}>
+      {reviewStatusLabel(status)}
+    </span>
+  );
+}
+
+function displayRawItemStatus(status: string | null) {
+  const normalized = status?.trim().toLowerCase().replace(/\s+/gu, "_") ?? "";
+  return normalized === "needs_review" || normalized === "accepted" ? null : status;
+}
+
 function ItemMeta({ label, value }: { label: string; value: string | number | null }) {
   if (value === null || value === "") {
     return null;
@@ -82,33 +121,81 @@ function ItemMeta({ label, value }: { label: string; value: string | number | nu
 function ReviewItemCard({
   item,
   onEvidenceClick,
+  onReview,
+  onReassign,
+  pending,
   focused,
+  meetingParticipants,
+  assigneeIdentities,
 }: {
   item: MeetingReviewItem;
   onEvidenceClick: (time: string) => void;
+  onReview: (operation: ReviewOperation, item: MeetingReviewItem) => void;
+  onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
+  pending: boolean;
   focused?: boolean;
+  meetingParticipants: string[];
+  assigneeIdentities: ActionAssigneeIdentity[];
 }) {
   const evidenceTargetTime = item.evidenceTargetTime;
+  const hasAssertionId = Boolean(item.assertionId);
+  const [reassigning, setReassigning] = useState(false);
 
   return (
     <article className={`meeting-review-item ${focused ? "meeting-review-item-focused" : ""}`}>
       <div className="meeting-review-item-header">
-        <span className="meeting-review-label">{item.label}</span>
-        {evidenceTargetTime ? (
-          <button
-            type="button"
-            className="meeting-evidence-go-button"
-            onClick={() => onEvidenceClick(evidenceTargetTime)}
-          >
-            Go to {evidenceTargetTime}
-          </button>
-        ) : null}
+        <div className="meeting-review-title-row">
+          <span className="meeting-review-label">{item.label}</span>
+          <ReviewStatusBadge status={item.reviewStatus} />
+        </div>
+        <div className="meeting-review-card-actions">
+          {evidenceTargetTime ? (
+            <button
+              type="button"
+              className="meeting-evidence-go-button"
+              onClick={() => onEvidenceClick(evidenceTargetTime)}
+            >
+              Go to {evidenceTargetTime}
+            </button>
+          ) : null}
+          {item.reviewStatus === "needs_review" && !reassigning ? (
+            <>
+              <button
+                type="button"
+                className="meeting-review-action-button"
+                disabled={pending || !hasAssertionId}
+                onClick={() => onReview("accept", item)}
+              >
+                Accept
+              </button>
+              <button
+                type="button"
+                className="meeting-review-action-button meeting-review-action-danger"
+                disabled={pending || !hasAssertionId}
+                onClick={() => onReview("reject", item)}
+              >
+                Reject
+              </button>
+            </>
+          ) : null}
+          {item.kind === "action" ? (
+            <ActionReassignControl
+              assertionId={item.assertionId}
+              currentAssignee={item.assignee}
+              meetingParticipants={meetingParticipants}
+              identities={assigneeIdentities}
+              pending={pending}
+              onReassign={onReassign}
+              onOpenChange={setReassigning}
+            />
+          ) : null}
+        </div>
       </div>
       <p>{item.summary || "No summary recorded."}</p>
       <div className="meeting-review-meta">
         <ItemMeta label="Owner" value={item.owner} />
         <ItemMeta label="Assignee" value={item.assignee} />
-        <ItemMeta label="Status" value={item.status} />
+        <ItemMeta label="Status" value={displayRawItemStatus(item.status)} />
         <ItemMeta label="Confidence" value={item.confidence} />
         <ItemMeta label="Score" value={item.score} />
       </div>
@@ -128,14 +215,24 @@ function ReviewSection({
   emptyText,
   items,
   onEvidenceClick,
+  onReview,
+  onReassign,
+  pending,
   focusedItemId,
+  meetingParticipants,
+  assigneeIdentities,
 }: {
   title: string;
   count: number;
   emptyText: string;
   items: MeetingReviewItem[];
   onEvidenceClick: (time: string) => void;
+  onReview: (operation: ReviewOperation, item: MeetingReviewItem) => void;
+  onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
+  pending: boolean;
   focusedItemId?: string;
+  meetingParticipants: string[];
+  assigneeIdentities: ActionAssigneeIdentity[];
 }) {
   return (
     <section className="meeting-review-section">
@@ -150,7 +247,12 @@ function ReviewSection({
               key={`${item.kind}-${item.label}-${item.id ?? item.summary}`}
               item={item}
               onEvidenceClick={onEvidenceClick}
+              onReview={onReview}
+              onReassign={onReassign}
+              pending={pending}
               focused={Boolean(focusedItemId && item.id === focusedItemId)}
+              meetingParticipants={meetingParticipants}
+              assigneeIdentities={assigneeIdentities}
             />
           ))}
         </div>
@@ -161,7 +263,15 @@ function ReviewSection({
   );
 }
 
-export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focusedTime, openOnLoad = false }: MeetingsIndexProps) {
+export function MeetingsIndex({
+  index,
+  selectedMeetingId,
+  focusedItemId,
+  focusedTime,
+  openOnLoad = false,
+  pendingReviewOnly = false,
+  assigneeIdentities,
+}: MeetingsIndexProps) {
   const [search, setSearch] = useState("");
   const [participant, setParticipant] = useState("all");
   const [month, setMonth] = useState("all");
@@ -169,6 +279,8 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
   const [meetingDetail, setMeetingDetail] = useState<MeetingDetail | null>(null);
   const [meetingLoadingId, setMeetingLoadingId] = useState<string | null>(null);
   const [meetingError, setMeetingError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [reviewPending, setReviewPending] = useState(false);
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(true);
   const [highlightedTime, setHighlightedTime] = useState<string | null>(null);
   const [scrollRequest, setScrollRequest] = useState<{ time: string; token: number } | null>(null);
@@ -179,6 +291,9 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
   const normalizedSearch = search.trim().toLowerCase();
 
   const filteredMeetings = index.meetings.filter((meeting) => {
+    if (pendingReviewOnly && pendingReviewItems([...meeting.actions, ...meeting.decisions]).length === 0) {
+      return false;
+    }
     if (participant !== "all" && !meeting.participants.includes(participant)) {
       return false;
     }
@@ -256,6 +371,86 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
     setScrollRequest((current) => ({ time, token: (current?.token ?? 0) + 1 }));
   }
 
+  async function postReview(operation: ReviewOperation, items: ReviewPayloadItem[]) {
+    if (items.length === 0) {
+      setActionMessage("No pending review items with assertion IDs.");
+      return;
+    }
+
+    setReviewPending(true);
+    setActionMessage(null);
+    try {
+      const response = await fetch("/api/meeting-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, items }),
+      });
+      const payload = (await response.json()) as ActionResponse;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.ok ? `HTTP ${response.status}` : payload.error);
+      }
+      setActionMessage(payload.summary);
+      window.location.reload();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewPending(false);
+    }
+  }
+
+  async function reassignAction(assertionId: string, assignee: string) {
+    setReviewPending(true);
+    setActionMessage(null);
+    try {
+      const response = await fetch("/api/meeting-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "reassign_action", assertionId, assignee }),
+      });
+      const payload = (await response.json()) as ActionResponse;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.ok ? `HTTP ${response.status}` : payload.error);
+      }
+      const reassignPayload = payload.payload as ReassignPayload | undefined;
+      if (reassignPayload?.reassigned !== 1 || !reassignPayload.assignee) {
+        setActionMessage(payload.summary || "No action was reassigned.");
+        return false;
+      }
+      setMeetingDetail((current) =>
+        current
+          ? {
+              ...current,
+              actions: current.actions.map((item) =>
+                item.assertionId === assertionId ? { ...item, assignee: reassignPayload.assignee ?? assignee } : item,
+              ),
+            }
+          : current,
+      );
+      setActionMessage(payload.summary);
+      return true;
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      setReviewPending(false);
+    }
+  }
+
+  function reviewItem(operation: ReviewOperation, item: MeetingReviewItem) {
+    if (!item.assertionId) {
+      setActionMessage("This item does not have a database assertion ID.");
+      return;
+    }
+    if (operation === "reject" && !window.confirm(`Reject and delete ${item.label}?`)) {
+      return;
+    }
+    void postReview(operation, [{ kind: item.kind, assertionId: item.assertionId }]);
+  }
+
+  function acceptPending(items: MeetingReviewItem[]) {
+    void postReview("accept", reviewPayloadItems(pendingReviewItems(items)));
+  }
+
   useEffect(() => {
     if (!selectedMeetingId) {
       return;
@@ -320,7 +515,9 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
         </span>
         <span>Index generated {formatDateTime(index.generatedAt)}</span>
         <span>{index.transcriptCount} transcripts tracked</span>
+        {pendingReviewOnly ? <span>Pending review only</span> : null}
       </div>
+      {actionMessage ? <p className="action-message meeting-action-message">{actionMessage}</p> : null}
 
       <div className="meetings-layout">
         <div className="meetings-list table-shell">
@@ -366,7 +563,24 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
           {selectedMeeting ? (
             <>
               <div className="meeting-detail-heading">
-                <p className="eyebrow">Selected Meeting</p>
+                <div className="meeting-links">
+                  <button
+                    type="button"
+                    className="action-trigger"
+                    disabled={meetingLoadingId === selectedMeeting.id}
+                    onClick={() => void openMeetingDetail(selectedMeeting)}
+                  >
+                    {meetingLoadingId === selectedMeeting.id ? "Opening..." : "Review meeting"}
+                  </button>
+                  <button
+                    type="button"
+                    className="action-trigger"
+                    disabled={reviewPending || !hasAcceptablePendingReview([...selectedMeeting.actions, ...selectedMeeting.decisions])}
+                    onClick={() => acceptPending([...selectedMeeting.actions, ...selectedMeeting.decisions])}
+                  >
+                    Accept pending
+                  </button>
+                </div>
                 <CountBadges actions={selectedMeeting.actionCount} decisions={selectedMeeting.decisionCount} />
               </div>
               <h3>{selectedMeeting.title}</h3>
@@ -386,6 +600,13 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
                 <div className="ops-field">
                   <span className="ops-label">Obsidian Ref</span>
                   <code>{selectedMeeting.obsidianRef}</code>
+                  {selectedMeeting.playbackUrl ? (
+                    <a href={selectedMeeting.playbackUrl} target="_blank" rel="noreferrer">
+                      Open Fathom playback
+                    </a>
+                  ) : (
+                    <span className="muted">No playback URL recorded.</span>
+                  )}
                 </div>
               </div>
 
@@ -400,23 +621,6 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
                 </div>
               </div>
 
-              <div className="meeting-links">
-                <button
-                  type="button"
-                  className="action-trigger"
-                  disabled={meetingLoadingId === selectedMeeting.id}
-                  onClick={() => void openMeetingDetail(selectedMeeting)}
-                >
-                  {meetingLoadingId === selectedMeeting.id ? "Opening..." : "Review meeting"}
-                </button>
-                {selectedMeeting.playbackUrl ? (
-                  <a href={selectedMeeting.playbackUrl} target="_blank" rel="noreferrer">
-                    Open Fathom playback
-                  </a>
-                ) : (
-                  <span className="muted">No playback URL recorded.</span>
-                )}
-              </div>
               {meetingError ? <p className="action-message">{meetingError}</p> : null}
             </>
           ) : (
@@ -453,6 +657,14 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
                 </div>
               </div>
               <div className="task-modal-actions">
+                <button
+                  type="button"
+                  className="action-trigger"
+                  disabled={reviewPending || !hasAcceptablePendingReview([...meetingDetail.actions, ...meetingDetail.decisions])}
+                  onClick={() => acceptPending([...meetingDetail.actions, ...meetingDetail.decisions])}
+                >
+                  Accept pending
+                </button>
                 {meetingDetail.playbackUrl ? (
                   <a className="action-trigger meeting-transcript-playback" href={meetingDetail.playbackUrl} target="_blank" rel="noreferrer">
                     Fathom
@@ -472,7 +684,12 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
                   emptyText="No actions extracted."
                   items={meetingDetail.actions}
                   onEvidenceClick={openEvidence}
+                  onReview={reviewItem}
+                  onReassign={reassignAction}
+                  pending={reviewPending}
                   focusedItemId={focusedItemId}
+                  meetingParticipants={meetingDetail.participants}
+                  assigneeIdentities={assigneeIdentities}
                 />
                 <ReviewSection
                   title="Decisions"
@@ -480,7 +697,12 @@ export function MeetingsIndex({ index, selectedMeetingId, focusedItemId, focused
                   emptyText="No decisions extracted."
                   items={meetingDetail.decisions}
                   onEvidenceClick={openEvidence}
+                  onReview={reviewItem}
+                  onReassign={reassignAction}
+                  pending={reviewPending}
                   focusedItemId={focusedItemId}
+                  meetingParticipants={meetingDetail.participants}
+                  assigneeIdentities={assigneeIdentities}
                 />
               </div>
 

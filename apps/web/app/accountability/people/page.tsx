@@ -1,8 +1,8 @@
-import { MissionControlPage } from "../page";
+import { MissionControlPage } from "../../page";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export default async function AccountabilityPage() {
+export default async function AccountabilityPeoplePage() {
   return <MissionControlPage activeWorkspace="accountability" />;
 }
