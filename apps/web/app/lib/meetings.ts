@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync as NodeDatabaseSync } from "node:sqlite";
 import {
   normalizeMeetingReviewStatus,
   parseMeetingMarkdown,
@@ -11,6 +12,10 @@ import {
 import { FATHOM_RECORDINGS_ROOT, MISSION_CONTROL_DB_PATH, MISSION_CONTROL_MEETINGS_SOURCE } from "./config";
 
 export type { MeetingReviewItem, MeetingTranscriptLine };
+
+type DatabaseSync = NodeDatabaseSync;
+const require = createRequire(`${process.cwd()}/package.json`);
+const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 
 export type MeetingRecording = {
   id: string;
@@ -129,6 +134,13 @@ type DbEvidenceRow = {
   assertionId: string;
   timestamp: string;
   quoteText: string | null;
+};
+
+type DbAssociationRow = {
+  assertionId: string;
+  identityId: string;
+  displayName: string;
+  email: string | null;
 };
 
 function readPrefix(filePath: string, maxBytes = 96_000) {
@@ -280,7 +292,15 @@ function groupEvidenceRows(rows: DbEvidenceRow[]) {
   return grouped;
 }
 
-function buildReviewItemFromDbAction(row: DbActionRow, evidenceRows: DbEvidenceRow[]): MeetingReviewItem {
+function groupAssociationRows(rows: DbAssociationRow[]) {
+  const grouped = new Map<string, DbAssociationRow[]>();
+  for (const row of rows) {
+    grouped.set(row.assertionId, [...(grouped.get(row.assertionId) ?? []), row]);
+  }
+  return grouped;
+}
+
+function buildReviewItemFromDbAction(row: DbActionRow, evidenceRows: DbEvidenceRow[], associationRows: DbAssociationRow[]): MeetingReviewItem {
   return {
     kind: "action",
     assertionId: row.actionAssertionId,
@@ -300,10 +320,15 @@ function buildReviewItemFromDbAction(row: DbActionRow, evidenceRows: DbEvidenceR
     evidence: row.evidenceText,
     evidenceTimestamps: evidenceRows.map((evidence) => evidence.timestamp),
     evidenceTargetTime: row.evidenceTargetTime,
+    associations: associationRows.map((association) => ({
+      identityId: association.identityId,
+      displayName: association.displayName,
+      email: association.email,
+    })),
   };
 }
 
-function buildReviewItemFromDbDecision(row: DbDecisionRow, evidenceRows: DbEvidenceRow[]): MeetingReviewItem {
+function buildReviewItemFromDbDecision(row: DbDecisionRow, evidenceRows: DbEvidenceRow[], associationRows: DbAssociationRow[]): MeetingReviewItem {
   return {
     kind: "decision",
     assertionId: row.decisionAssertionId,
@@ -323,6 +348,11 @@ function buildReviewItemFromDbDecision(row: DbDecisionRow, evidenceRows: DbEvide
     evidence: row.evidenceText,
     evidenceTimestamps: evidenceRows.map((evidence) => evidence.timestamp),
     evidenceTargetTime: row.evidenceTargetTime,
+    associations: associationRows.map((association) => ({
+      identityId: association.identityId,
+      displayName: association.displayName,
+      email: association.email,
+    })),
   };
 }
 
@@ -439,6 +469,17 @@ export function loadMeetingIndexFromDbPath(dbPath = MISSION_CONTROL_DB_PATH, roo
      FROM evidence_links
      ORDER BY assertion_id, sequence;`,
   );
+  const associationRows = queryRows<DbAssociationRow>(
+    db,
+    `SELECT
+       aa.assertion_id as assertionId,
+       i.identity_id as identityId,
+       i.display_name as displayName,
+       i.primary_email as email
+     FROM assertion_associations aa
+     JOIN identities i ON i.identity_id = aa.identity_id
+     ORDER BY aa.assertion_id, i.display_name;`,
+  );
 
   const expectedParticipantCount = meetingRows.reduce((sum, row) => sum + row.participantCount, 0);
   const expectedActionCount = meetingRows.reduce((sum, row) => sum + row.actionCount, 0);
@@ -453,15 +494,24 @@ export function loadMeetingIndexFromDbPath(dbPath = MISSION_CONTROL_DB_PATH, roo
   const actionsByMeeting = groupRows(actionRows);
   const decisionsByMeeting = groupRows(decisionRows);
   const evidenceByAssertion = groupEvidenceRows(evidenceRows);
+  const associationsByAssertion = groupAssociationRows(associationRows);
 
   const meetings = sortMeetings(
     meetingRows.map((row) => {
       const participants = (participantsByMeeting.get(row.meetingId) ?? []).map((participant) => participant.rawName);
       const actions = (actionsByMeeting.get(row.meetingId) ?? []).map((action) =>
-        buildReviewItemFromDbAction(action, evidenceByAssertion.get(action.actionAssertionId) ?? []),
+        buildReviewItemFromDbAction(
+          action,
+          evidenceByAssertion.get(action.actionAssertionId) ?? [],
+          associationsByAssertion.get(action.actionAssertionId) ?? [],
+        ),
       );
       const decisions = (decisionsByMeeting.get(row.meetingId) ?? []).map((decision) =>
-        buildReviewItemFromDbDecision(decision, evidenceByAssertion.get(decision.decisionAssertionId) ?? []),
+        buildReviewItemFromDbDecision(
+          decision,
+          evidenceByAssertion.get(decision.decisionAssertionId) ?? [],
+          associationsByAssertion.get(decision.decisionAssertionId) ?? [],
+        ),
       );
       const filePath = row.transcriptSourcePath;
       const id = path.basename(filePath, ".md");

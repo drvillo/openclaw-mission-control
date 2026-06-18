@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -159,6 +159,53 @@ export type ActionAssertionStatusUpdateResult = {
   status: ActionWorkflowStatus;
 };
 
+export type MyntIdentitySyncInput = {
+  id: string;
+  email?: string | null;
+  displayName: string;
+  aliases?: string[];
+  isSelf?: boolean;
+  source?: MyntIdentitySource;
+};
+
+export type MyntIdentitySource = "manual" | "auto" | "legacy";
+
+export type MyntDbIdentity = {
+  id: string;
+  email: string;
+  displayName: string;
+  aliases: string[];
+  isSelf: boolean;
+  inferred: boolean;
+  source: MyntIdentitySource;
+};
+
+export type MyntDbState = {
+  version: 1;
+  showSelfDefault: boolean;
+  archivedItemIds: string[];
+  identities: MyntDbIdentity[];
+};
+
+export type LegacyMyntStateImportResult = {
+  imported: boolean;
+  identities: number;
+  aliases: number;
+  archivedItems: number;
+  settings: number;
+};
+
+const SELF_EMAIL = "francesco@lunarrails.io";
+const SELF_NAME = "Francesco Vivoli";
+
+export type AssertionAssociationSource = "meeting_participant";
+
+export type AssertionAssociationSyncResult = {
+  scannedAssertions: number;
+  inserted: number;
+  deleted: number;
+};
+
 export type MeetingIngestionFailurePayload = {
   sourceDocumentId?: string | null;
   canonicalSourcePath: string;
@@ -177,6 +224,870 @@ function stableId(prefix: string, ...parts: Array<string | null | undefined>) {
     hash.update("\u0000");
   }
   return `${prefix}_${hash.digest("hex")}`;
+}
+
+function normalizeIdentityValue(value: string | null | undefined) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/gu, " ");
+}
+
+function identityLookupKey(value: string | null | undefined) {
+  return normalizeIdentityValue(value).toLowerCase();
+}
+
+type ParsedIdentityValue = {
+  raw: string;
+  displayName: string;
+  email: string | null;
+};
+
+function parseIdentityValue(rawValue: string | null | undefined): ParsedIdentityValue | null {
+  const raw = normalizeIdentityValue(rawValue);
+  if (!raw || raw.toLowerCase() === "unclear" || raw.toLowerCase() === "none") {
+    return null;
+  }
+  const bracket = raw.match(/^(.+?)\s*<([^<>\s]+@[^<>\s]+)>$/u);
+  if (bracket) {
+    return { raw, displayName: normalizeIdentityValue(bracket[1]), email: bracket[2].toLowerCase() };
+  }
+  const email = raw.match(/[^\s<>]+@[^\s<>]+\.[^\s<>]+/u)?.[0]?.toLowerCase() ?? null;
+  return { raw, displayName: email && raw === email ? email : raw.replace(email ?? "", "").trim() || raw, email };
+}
+
+function uniqueNormalized(values: Array<string | null | undefined>) {
+  return [...new Set(values.map(normalizeIdentityValue).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function identityIdForName(value: string) {
+  return `name:${identityLookupKey(value)}`;
+}
+
+function isLikelyFullName(value: string) {
+  const parsed = parseIdentityValue(value);
+  if (!parsed || parsed.email) {
+    return false;
+  }
+  const tokens = parsed.displayName.split(/\s+/u).filter((token) => /\p{L}/u.test(token));
+  return tokens.length >= 2 && !/[&,/]/u.test(parsed.displayName);
+}
+
+function normalizeIdentitySource(value: string | null | undefined): MyntIdentitySource {
+  return value === "manual" || value === "auto" || value === "legacy" ? value : "legacy";
+}
+
+function aliasTypeForValue(value: string) {
+  const parsed = parseIdentityValue(value);
+  return parsed?.email && identityLookupKey(value) === parsed.email ? "email" : "name";
+}
+
+export function ensureMyntStateSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS identities (
+      identity_id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      primary_email TEXT,
+      is_self INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'legacy',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_aliases (
+      identity_alias_id TEXT PRIMARY KEY,
+      identity_id TEXT NOT NULL,
+      alias_type TEXT NOT NULL,
+      alias_value TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(identity_id, alias_type, alias_value)
+    );
+
+    CREATE TABLE IF NOT EXISTS mynt_archived_items (
+      item_id TEXT PRIMARY KEY,
+      archived_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mynt_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_identity_aliases_value ON identity_aliases (alias_value);
+    CREATE INDEX IF NOT EXISTS idx_identity_aliases_identity ON identity_aliases (identity_id);
+  `);
+  try {
+    db.exec("ALTER TABLE identities ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy';");
+  } catch {
+    // Existing deployments may already have the column.
+  }
+}
+
+function upsertMyntIdentity(db: DatabaseSync, input: MyntIdentitySyncInput, source: MyntIdentitySource, now: string) {
+  ensureMyntStateSchema(db);
+  const identityId = normalizeIdentityValue(input.id || input.email || input.displayName);
+  const displayName = normalizeIdentityValue(input.displayName || input.email || input.id);
+  if (!identityId || !displayName) {
+    return { identityId: null, aliases: 0 };
+  }
+
+  const email = normalizeIdentityValue(input.email).toLowerCase();
+  db.prepare(`
+    INSERT INTO identities (identity_id, display_name, primary_email, is_self, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(identity_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      primary_email = excluded.primary_email,
+      is_self = excluded.is_self,
+      source = CASE
+        WHEN identities.source = 'manual' THEN identities.source
+        ELSE excluded.source
+      END,
+      updated_at = excluded.updated_at;
+  `).run(identityId, displayName, email || null, input.isSelf ? 1 : 0, source, now, now);
+
+  let aliases = 0;
+  const insertAlias = db.prepare(`
+    INSERT OR IGNORE INTO identity_aliases (identity_alias_id, identity_id, alias_type, alias_value, created_at)
+    VALUES (?, ?, ?, ?, ?);
+  `);
+  for (const aliasValue of uniqueNormalized([displayName, email, ...(input.aliases ?? [])])) {
+    const parsed = parseIdentityValue(aliasValue);
+    const normalizedAlias = parsed?.email && parsed.raw === parsed.email ? parsed.email : aliasValue;
+    const aliasType = aliasTypeForValue(normalizedAlias);
+    aliases += Number(
+      insertAlias.run(stableId("identity_alias", identityId, aliasType, normalizedAlias), identityId, aliasType, normalizedAlias, now).changes ?? 0,
+    );
+  }
+  if (email) {
+    aliases += Number(insertAlias.run(stableId("identity_alias", identityId, "email", email), identityId, "email", email, now).changes ?? 0);
+  }
+  return { identityId, aliases };
+}
+
+export function seedMyntSelfIdentity(db: DatabaseSync, now = new Date().toISOString()): void {
+  upsertMyntIdentity(
+    db,
+    {
+      id: SELF_EMAIL,
+      email: SELF_EMAIL,
+      displayName: SELF_NAME,
+      aliases: [SELF_NAME, SELF_EMAIL],
+      isSelf: true,
+      source: "manual",
+    },
+    "manual",
+    now,
+  );
+}
+
+function countMatchingIdentityIds(db: DatabaseSync, parsed: ParsedIdentityValue) {
+  const ids = new Set<string>();
+  if (parsed.email) {
+    const rows = db
+      .prepare(
+        `SELECT identity_id as identityId
+         FROM identities
+         WHERE lower(COALESCE(primary_email, '')) = ?
+         UNION
+         SELECT identity_id as identityId
+         FROM identity_aliases
+         WHERE alias_type = 'email'
+           AND lower(alias_value) = ?;`,
+      )
+      .all(parsed.email, parsed.email) as Array<{ identityId?: string }>;
+    for (const row of rows) {
+      if (row.identityId) {
+        ids.add(row.identityId);
+      }
+    }
+  }
+
+  const aliasKey = identityLookupKey(parsed.displayName);
+  if (aliasKey) {
+    const rows = db
+      .prepare(
+        `SELECT identity_id as identityId
+         FROM identity_aliases
+         WHERE lower(alias_value) = ?;`,
+      )
+      .all(aliasKey) as Array<{ identityId?: string }>;
+    for (const row of rows) {
+      if (row.identityId) {
+        ids.add(row.identityId);
+      }
+    }
+  }
+  return ids;
+}
+
+export function resolveMyntIdentityIdForRawValue(db: DatabaseSync, rawValue: string | null | undefined): string | null {
+  ensureMyntStateSchema(db);
+  const parsed = parseIdentityValue(rawValue);
+  if (!parsed) {
+    return null;
+  }
+  const ids = countMatchingIdentityIds(db, parsed);
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+export function bootstrapMyntIdentitiesFromRawValues(
+  db: DatabaseSync,
+  rawValues: Array<string | null | undefined>,
+  now = new Date().toISOString(),
+): { identities: number; aliases: number } {
+  ensureMyntStateSchema(db);
+  seedMyntSelfIdentity(db, now);
+  let identities = 0;
+  let aliases = 0;
+  const seenAutoIds = new Set<string>();
+
+  for (const rawValue of rawValues) {
+    const parsed = parseIdentityValue(rawValue);
+    if (!parsed) {
+      continue;
+    }
+    if (countMatchingIdentityIds(db, parsed).size > 0) {
+      continue;
+    }
+
+    const input: MyntIdentitySyncInput | null = parsed.email
+      ? {
+          id: parsed.email,
+          email: parsed.email,
+          displayName: parsed.displayName || parsed.email,
+          aliases: uniqueNormalized([parsed.raw, parsed.displayName, parsed.email]),
+          isSelf: parsed.email === SELF_EMAIL,
+          source: "auto",
+        }
+      : isLikelyFullName(parsed.displayName)
+        ? {
+            id: identityIdForName(parsed.displayName),
+            email: null,
+            displayName: parsed.displayName,
+            aliases: [parsed.displayName],
+            isSelf: identityLookupKey(parsed.displayName) === identityLookupKey(SELF_NAME),
+            source: "auto",
+          }
+        : null;
+
+    if (!input || seenAutoIds.has(input.id)) {
+      continue;
+    }
+    seenAutoIds.add(input.id);
+    const result = upsertMyntIdentity(db, input, "auto", now);
+    if (result.identityId) {
+      identities += 1;
+      aliases += result.aliases;
+    }
+  }
+
+  return { identities, aliases };
+}
+
+export function bootstrapMyntIdentitiesFromCurrentMeetings(db: DatabaseSync, now = new Date().toISOString()) {
+  ensureMyntStateSchema(db);
+  const rows = db
+    .prepare(
+      `SELECT mp.raw_name as rawValue
+       FROM meetings m
+       JOIN meeting_participants mp
+         ON mp.meeting_id = m.meeting_id
+        AND mp.document_version_id = m.current_document_version_id
+       UNION ALL
+       SELECT aa.raw_assignee as rawValue
+       FROM meetings m
+       JOIN action_assertions aa
+         ON aa.meeting_id = m.meeting_id
+        AND aa.document_version_id = m.current_document_version_id
+       UNION ALL
+       SELECT da.raw_owner as rawValue
+       FROM meetings m
+       JOIN decision_assertions da
+         ON da.meeting_id = m.meeting_id
+        AND da.document_version_id = m.current_document_version_id;`,
+    )
+    .all() as Array<{ rawValue?: string | null }>;
+  const result = bootstrapMyntIdentitiesFromRawValues(
+    db,
+    rows.map((row) => row.rawValue),
+    now,
+  );
+  backfillMyntIdentityReferences(db);
+  return result;
+}
+
+export function backfillMyntIdentityReferences(db: DatabaseSync): { participants: number; transcriptSpeakers: number } {
+  ensureMyntStateSchema(db);
+  let participants = 0;
+  let transcriptSpeakers = 0;
+  const participantRows = db
+    .prepare(
+      `SELECT meeting_participant_id as id, raw_name as rawName
+       FROM meeting_participants;`,
+    )
+    .all() as Array<{ id?: string; rawName?: string }>;
+  const updateParticipant = db.prepare("UPDATE meeting_participants SET identity_id = ? WHERE meeting_participant_id = ?;");
+  for (const row of participantRows) {
+    const identityId = resolveMyntIdentityIdForRawValue(db, row.rawName);
+    if (row.id) {
+      participants += Number(updateParticipant.run(identityId, row.id).changes ?? 0);
+    }
+  }
+
+  const speakerRows = db
+    .prepare(
+      `SELECT transcript_segment_id as id, speaker_raw as speakerRaw
+       FROM transcript_segments;`,
+    )
+    .all() as Array<{ id?: string; speakerRaw?: string }>;
+  const updateSpeaker = db.prepare("UPDATE transcript_segments SET speaker_identity_id = ? WHERE transcript_segment_id = ?;");
+  for (const row of speakerRows) {
+    const identityId = resolveMyntIdentityIdForRawValue(db, row.speakerRaw);
+    if (row.id) {
+      transcriptSpeakers += Number(updateSpeaker.run(identityId, row.id).changes ?? 0);
+    }
+  }
+  return { participants, transcriptSpeakers };
+}
+
+export function loadMyntStateFromDb(db: DatabaseSync): MyntDbState {
+  ensureMyntStateSchema(db);
+  seedMyntSelfIdentity(db);
+  const identityRows = db
+    .prepare(
+      `SELECT identity_id as id,
+              display_name as displayName,
+              COALESCE(primary_email, '') as email,
+              is_self as isSelf,
+              source as source
+       FROM identities
+       ORDER BY display_name, identity_id;`,
+    )
+    .all() as Array<{ id: string; displayName: string; email: string; isSelf: number; source?: string | null }>;
+  const aliasRows = db
+    .prepare(
+      `SELECT identity_id as identityId, alias_value as aliasValue
+       FROM identity_aliases
+       ORDER BY identity_id, alias_value;`,
+    )
+    .all() as Array<{ identityId?: string; aliasValue?: string }>;
+  const aliasesByIdentity = new Map<string, string[]>();
+  for (const row of aliasRows) {
+    if (row.identityId && row.aliasValue) {
+      aliasesByIdentity.set(row.identityId, [...(aliasesByIdentity.get(row.identityId) ?? []), row.aliasValue]);
+    }
+  }
+  const archivedRows = db
+    .prepare("SELECT item_id as itemId FROM mynt_archived_items ORDER BY item_id;")
+    .all() as Array<{ itemId?: string }>;
+  const settingRow = db
+    .prepare("SELECT setting_value as value FROM mynt_settings WHERE setting_key = 'showSelfDefault' LIMIT 1;")
+    .get() as { value?: string } | undefined;
+
+  return {
+    version: 1,
+    showSelfDefault: settingRow?.value === "true",
+    archivedItemIds: uniqueNormalized(archivedRows.map((row) => row.itemId)),
+    identities: identityRows.map((identity) => {
+      const source = normalizeIdentitySource(identity.source);
+      const aliases = uniqueNormalized([...(aliasesByIdentity.get(identity.id) ?? []), identity.displayName, identity.email]);
+      return {
+        id: identity.id,
+        email: identity.email,
+        displayName: identity.displayName,
+        aliases,
+        isSelf: Boolean(identity.isSelf) || identity.email.toLowerCase() === SELF_EMAIL,
+        inferred: source === "auto",
+        source,
+      };
+    }),
+  };
+}
+
+export function importLegacyMyntStateFile(
+  db: DatabaseSync,
+  statePath: string,
+  now = new Date().toISOString(),
+): LegacyMyntStateImportResult {
+  ensureMyntStateSchema(db);
+  seedMyntSelfIdentity(db, now);
+  if (!existsSync(statePath)) {
+    return { imported: false, identities: 0, aliases: 0, archivedItems: 0, settings: 0 };
+  }
+  const raw = JSON.parse(readFileSync(statePath, "utf8")) as {
+    identities?: unknown;
+    archivedItemIds?: unknown;
+    showSelfDefault?: unknown;
+  };
+  const identities = Array.isArray(raw.identities)
+    ? raw.identities
+        .map((identity) => identity as { id?: unknown; email?: unknown; displayName?: unknown; aliases?: unknown; isSelf?: unknown; inferred?: unknown })
+        .filter((identity) => Boolean(identity.id && identity.displayName))
+        .map(
+          (identity): MyntIdentitySyncInput => ({
+            id: String(identity.id),
+            email: identity.email ? String(identity.email) : null,
+            displayName: String(identity.displayName),
+            aliases: Array.isArray(identity.aliases) ? identity.aliases.map(String) : [],
+            isSelf: Boolean(identity.isSelf),
+            source: identity.inferred ? "auto" : "legacy",
+          }),
+        )
+    : [];
+
+  let identityCount = 0;
+  let aliasCount = 0;
+  let archivedItems = 0;
+  let settings = 0;
+  db.exec("BEGIN;");
+  try {
+    for (const identity of identities) {
+      const result = upsertMyntIdentity(db, identity, normalizeIdentitySource(identity.source), now);
+      if (result.identityId) {
+        identityCount += 1;
+        aliasCount += result.aliases;
+      }
+    }
+    const insertArchive = db.prepare("INSERT OR IGNORE INTO mynt_archived_items (item_id, archived_at) VALUES (?, ?);");
+    if (Array.isArray(raw.archivedItemIds)) {
+      for (const itemId of uniqueNormalized(raw.archivedItemIds.map(String))) {
+        archivedItems += Number(insertArchive.run(itemId, now).changes ?? 0);
+      }
+    }
+    db.prepare(
+      `INSERT INTO mynt_settings (setting_key, setting_value, updated_at)
+       VALUES ('showSelfDefault', ?, ?)
+       ON CONFLICT(setting_key) DO UPDATE SET
+         setting_value = excluded.setting_value,
+         updated_at = excluded.updated_at;`,
+    ).run(Boolean(raw.showSelfDefault) ? "true" : "false", now);
+    settings = 1;
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  unlinkSync(statePath);
+  return { imported: true, identities: identityCount, aliases: aliasCount, archivedItems, settings };
+}
+
+export function archiveMyntItemIdsInDb(db: DatabaseSync, ids: string[], now = new Date().toISOString()): string[] {
+  ensureMyntStateSchema(db);
+  const insertArchive = db.prepare("INSERT OR IGNORE INTO mynt_archived_items (item_id, archived_at) VALUES (?, ?);");
+  for (const id of uniqueNormalized(ids)) {
+    insertArchive.run(id, now);
+  }
+  return (db.prepare("SELECT item_id as itemId FROM mynt_archived_items ORDER BY item_id;").all() as Array<{ itemId?: string }>)
+    .map((row) => row.itemId)
+    .filter((itemId): itemId is string => Boolean(itemId));
+}
+
+export function approveMyntAliasInDb(
+  db: DatabaseSync,
+  identityId: string,
+  rawAlias: string,
+  identityDisplayName?: string,
+  now = new Date().toISOString(),
+): MyntDbIdentity {
+  ensureMyntStateSchema(db);
+  const parsed = parseIdentityValue(rawAlias);
+  if (!parsed) {
+    throw new Error("Alias is required");
+  }
+  const normalizedIdentityId = normalizeIdentityValue(identityId);
+  let identity = db
+    .prepare("SELECT identity_id as id, display_name as displayName, primary_email as email FROM identities WHERE identity_id = ? OR primary_email = ? LIMIT 1;")
+    .get(normalizedIdentityId, normalizedIdentityId) as { id?: string; displayName?: string; email?: string | null } | undefined;
+
+  const inferredEmail = parseIdentityValue(normalizedIdentityId)?.email;
+  if (!identity && (normalizedIdentityId.startsWith("name:") || inferredEmail)) {
+    const displayName = normalizeIdentityValue(identityDisplayName || (inferredEmail ? normalizedIdentityId : normalizedIdentityId.slice("name:".length)));
+    upsertMyntIdentity(
+      db,
+      {
+        id: normalizedIdentityId,
+        email: inferredEmail ?? null,
+        displayName,
+        aliases: uniqueNormalized([displayName, inferredEmail ?? ""]),
+        isSelf: inferredEmail === SELF_EMAIL || identityLookupKey(displayName) === identityLookupKey(SELF_NAME),
+        source: "manual",
+      },
+      "manual",
+      now,
+    );
+    identity = { id: normalizedIdentityId, displayName, email: inferredEmail ?? null };
+  }
+  if (!identity?.id) {
+    throw new Error(`Unknown identity: ${identityId}`);
+  }
+
+  db.exec("BEGIN;");
+  try {
+    const aliasValues = uniqueNormalized([parsed.raw, parsed.displayName, parsed.email ?? ""]);
+    for (const aliasValue of aliasValues) {
+      const aliasKey = identityLookupKey(aliasValue);
+      if (!aliasKey) {
+        continue;
+      }
+      db.prepare("DELETE FROM identity_aliases WHERE identity_id <> ? AND lower(alias_value) = ?;").run(identity.id, aliasKey);
+      const aliasType = aliasTypeForValue(aliasValue);
+      db.prepare(
+        `INSERT OR IGNORE INTO identity_aliases (identity_alias_id, identity_id, alias_type, alias_value, created_at)
+         VALUES (?, ?, ?, ?, ?);`,
+      ).run(stableId("identity_alias", identity.id, aliasType, aliasValue), identity.id, aliasType, aliasValue, now);
+    }
+    if (parsed.email && !identity.email) {
+      db.prepare("UPDATE identities SET primary_email = ?, source = 'manual', updated_at = ? WHERE identity_id = ?;").run(parsed.email, now, identity.id);
+    } else {
+      db.prepare("UPDATE identities SET source = 'manual', updated_at = ? WHERE identity_id = ?;").run(now, identity.id);
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  return loadMyntStateFromDb(db).identities.find((item) => item.id === identity.id)!;
+}
+
+export function updateMyntIdentityEmailInDb(
+  db: DatabaseSync,
+  identityId: string,
+  rawEmail: string,
+  identityDisplayName?: string,
+  now = new Date().toISOString(),
+): MyntDbIdentity {
+  ensureMyntStateSchema(db);
+  const email = normalizeIdentityValue(rawEmail).toLowerCase();
+  if (email && !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/u.test(email)) {
+    throw new Error("Enter a valid email address");
+  }
+
+  const normalizedIdentityId = normalizeIdentityValue(identityId);
+  let identity = db
+    .prepare("SELECT identity_id as id, display_name as displayName, primary_email as email FROM identities WHERE identity_id = ? OR primary_email = ? LIMIT 1;")
+    .get(normalizedIdentityId, normalizedIdentityId) as { id?: string; displayName?: string; email?: string | null } | undefined;
+  const inferredEmail = parseIdentityValue(normalizedIdentityId)?.email;
+  if (!identity && (normalizedIdentityId.startsWith("name:") || inferredEmail)) {
+    const displayName = normalizeIdentityValue(identityDisplayName || (inferredEmail ? normalizedIdentityId : normalizedIdentityId.slice("name:".length)));
+    upsertMyntIdentity(
+      db,
+      {
+        id: normalizedIdentityId,
+        email: inferredEmail ?? null,
+        displayName,
+        aliases: uniqueNormalized([displayName, inferredEmail ?? ""]),
+        isSelf: inferredEmail === SELF_EMAIL || identityLookupKey(displayName) === identityLookupKey(SELF_NAME),
+        source: "manual",
+      },
+      "manual",
+      now,
+    );
+    identity = { id: normalizedIdentityId, displayName, email: inferredEmail ?? null };
+  }
+  if (!identity?.id) {
+    throw new Error(`Unknown identity: ${identityId}`);
+  }
+
+  if (email) {
+    const conflicts = countMatchingIdentityIds(db, { raw: email, displayName: email, email });
+    conflicts.delete(identity.id);
+    if (conflicts.size > 0) {
+      const conflictingIdentity = db
+        .prepare("SELECT display_name as displayName FROM identities WHERE identity_id = ? LIMIT 1;")
+        .get([...conflicts][0]) as { displayName?: string } | undefined;
+      throw new Error(`Email is already assigned to ${conflictingIdentity?.displayName ?? "another identity"}`);
+    }
+  }
+
+  db.exec("BEGIN;");
+  try {
+    const previousEmail = normalizeIdentityValue(identity.email).toLowerCase();
+    if (previousEmail) {
+      db.prepare("DELETE FROM identity_aliases WHERE identity_id = ? AND alias_type = 'email' AND lower(alias_value) = ?;").run(identity.id, previousEmail);
+    }
+    db.prepare("UPDATE identities SET primary_email = ?, source = 'manual', updated_at = ? WHERE identity_id = ?;").run(email || null, now, identity.id);
+    if (email) {
+      db.prepare("DELETE FROM identity_aliases WHERE identity_id <> ? AND lower(alias_value) = ?;").run(identity.id, email);
+      db.prepare(
+        `INSERT OR IGNORE INTO identity_aliases (identity_alias_id, identity_id, alias_type, alias_value, created_at)
+         VALUES (?, ?, 'email', ?, ?);`,
+      ).run(stableId("identity_alias", identity.id, "email", email), identity.id, email, now);
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  return loadMyntStateFromDb(db).identities.find((item) => item.id === identity.id)!;
+}
+
+export function ensureAssertionAssociationSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS assertion_associations (
+      assertion_association_id TEXT PRIMARY KEY,
+      assertion_kind TEXT NOT NULL,
+      assertion_id TEXT NOT NULL,
+      meeting_id TEXT NOT NULL,
+      document_version_id TEXT NOT NULL,
+      identity_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(assertion_kind, assertion_id, identity_id, source)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_assertion ON assertion_associations (assertion_kind, assertion_id);
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_meeting_version ON assertion_associations (meeting_id, document_version_id);
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_identity ON assertion_associations (identity_id);
+  `);
+}
+
+function resolveIdentityIdForRawValue(db: DatabaseSync, rawValue: string | null | undefined): string | null {
+  return resolveMyntIdentityIdForRawValue(db, rawValue);
+}
+
+export function syncMyntIdentitiesToDb(
+  db: DatabaseSync,
+  identities: MyntIdentitySyncInput[],
+  syncedAt = new Date().toISOString(),
+): { identities: number; aliases: number } {
+  ensureMyntStateSchema(db);
+  const upsertIdentity = db.prepare(`
+    INSERT INTO identities (identity_id, display_name, primary_email, is_self, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(identity_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      primary_email = excluded.primary_email,
+      is_self = excluded.is_self,
+      source = CASE
+        WHEN identities.source = 'manual' THEN identities.source
+        ELSE excluded.source
+      END,
+      updated_at = excluded.updated_at;
+  `);
+  const insertAlias = db.prepare(`
+    INSERT OR IGNORE INTO identity_aliases (identity_alias_id, identity_id, alias_type, alias_value, created_at)
+    VALUES (?, ?, ?, ?, ?);
+  `);
+  const deleteAliasesForIdentity = db.prepare(`
+    DELETE FROM identity_aliases
+    WHERE identity_id = ?;
+  `);
+  let identityCount = 0;
+  let aliasCount = 0;
+
+  db.exec("BEGIN;");
+  try {
+    for (const identity of identities) {
+      const identityId = normalizeIdentityValue(identity.id || identity.email || identity.displayName);
+      const displayName = normalizeIdentityValue(identity.displayName || identity.email || identity.id);
+      if (!identityId || !displayName) {
+        continue;
+      }
+      const email = normalizeIdentityValue(identity.email).toLowerCase();
+      upsertIdentity.run(
+        identityId,
+        displayName,
+        email || null,
+        identity.isSelf ? 1 : 0,
+        normalizeIdentitySource(identity.source),
+        syncedAt,
+        syncedAt,
+      );
+      deleteAliasesForIdentity.run(identityId);
+      identityCount += 1;
+
+      const aliasValues = uniqueNormalized([displayName, email, ...(identity.aliases ?? [])]);
+      for (const aliasValue of aliasValues) {
+        const parsed = parseIdentityValue(aliasValue);
+        const normalizedAlias = parsed?.email && parsed.raw === parsed.email ? parsed.email : aliasValue;
+        const aliasType = parsed?.email && identityLookupKey(normalizedAlias) === parsed.email ? "email" : "name";
+        const result = insertAlias.run(
+          stableId("identity_alias", identityId, aliasType, normalizedAlias),
+          identityId,
+          aliasType,
+          normalizedAlias,
+          syncedAt,
+        );
+        aliasCount += Number(result.changes ?? 0);
+      }
+      if (email) {
+        const result = insertAlias.run(stableId("identity_alias", identityId, "email", email), identityId, "email", email, syncedAt);
+        aliasCount += Number(result.changes ?? 0);
+      }
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  return { identities: identityCount, aliases: aliasCount };
+}
+
+type AssociationCandidate = {
+  assertionKind: "action" | "decision";
+  assertionId: string;
+  meetingId: string;
+  documentVersionId: string;
+  identityId: string;
+  source: AssertionAssociationSource;
+};
+
+type AssertionAssociationRow = {
+  assertionKind: "action" | "decision";
+  assertionId: string;
+  meetingId: string;
+  documentVersionId: string;
+  primaryRaw: string | null;
+};
+
+type ParticipantAssociationRow = {
+  rawName: string;
+  identityId: string | null;
+};
+
+function buildAssociationCandidatesForMeetingVersion(
+  db: DatabaseSync,
+  meetingId: string,
+  documentVersionId: string,
+): { scannedAssertions: number; candidates: AssociationCandidate[] } {
+  const participants = db
+    .prepare(
+      `SELECT raw_name as rawName, identity_id as identityId
+       FROM meeting_participants
+       WHERE meeting_id = ? AND document_version_id = ?
+       ORDER BY sequence ASC;`,
+    )
+    .all(meetingId, documentVersionId) as ParticipantAssociationRow[];
+  const participantIdentityIds = uniqueNormalized(
+    participants.map((participant) => participant.identityId || resolveIdentityIdForRawValue(db, participant.rawName)),
+  );
+  const assertions = db
+    .prepare(
+      `SELECT 'action' as assertionKind,
+              action_assertion_id as assertionId,
+              meeting_id as meetingId,
+              document_version_id as documentVersionId,
+              raw_assignee as primaryRaw
+       FROM action_assertions
+       WHERE meeting_id = ? AND document_version_id = ?
+       UNION ALL
+       SELECT 'decision' as assertionKind,
+              decision_assertion_id as assertionId,
+              meeting_id as meetingId,
+              document_version_id as documentVersionId,
+              raw_owner as primaryRaw
+       FROM decision_assertions
+       WHERE meeting_id = ? AND document_version_id = ?;`,
+    )
+    .all(meetingId, documentVersionId, meetingId, documentVersionId) as AssertionAssociationRow[];
+  const candidates: AssociationCandidate[] = [];
+
+  for (const assertion of assertions) {
+    const primaryIdentityId = resolveIdentityIdForRawValue(db, assertion.primaryRaw);
+    for (const identityId of participantIdentityIds) {
+      if (identityId === primaryIdentityId) {
+        continue;
+      }
+      candidates.push({
+        assertionKind: assertion.assertionKind,
+        assertionId: assertion.assertionId,
+        meetingId: assertion.meetingId,
+        documentVersionId: assertion.documentVersionId,
+        identityId,
+        source: "meeting_participant",
+      });
+    }
+  }
+
+  return { scannedAssertions: assertions.length, candidates };
+}
+
+function insertAssociationCandidates(db: DatabaseSync, candidates: AssociationCandidate[], now: string) {
+  const insertAssociation = db.prepare(`
+    INSERT OR IGNORE INTO assertion_associations (
+      assertion_association_id, assertion_kind, assertion_id, meeting_id, document_version_id,
+      identity_id, source, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+  `);
+  let inserted = 0;
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const key = `${candidate.assertionKind}:${candidate.assertionId}:${candidate.identityId}:${candidate.source}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const result = insertAssociation.run(
+      stableId("assertion_association", candidate.assertionKind, candidate.assertionId, candidate.identityId, candidate.source),
+      candidate.assertionKind,
+      candidate.assertionId,
+      candidate.meetingId,
+      candidate.documentVersionId,
+      candidate.identityId,
+      candidate.source,
+      now,
+      now,
+    );
+    inserted += Number(result.changes ?? 0);
+  }
+  return inserted;
+}
+
+export function deriveAssertionAssociationsForMeetingVersion(
+  db: DatabaseSync,
+  meetingId: string,
+  documentVersionId: string,
+  now = new Date().toISOString(),
+): AssertionAssociationSyncResult {
+  ensureAssertionAssociationSchema(db);
+  const { scannedAssertions, candidates } = buildAssociationCandidatesForMeetingVersion(db, meetingId, documentVersionId);
+  const deleteResult = db
+    .prepare(
+      `DELETE FROM assertion_associations
+       WHERE meeting_id = ? AND document_version_id = ?;`,
+    )
+    .run(meetingId, documentVersionId);
+  const inserted = insertAssociationCandidates(db, candidates, now);
+  return { scannedAssertions, inserted, deleted: Number(deleteResult.changes ?? 0) };
+}
+
+export function backfillAssertionAssociations(db: DatabaseSync, now = new Date().toISOString()): AssertionAssociationSyncResult {
+  ensureAssertionAssociationSchema(db);
+  bootstrapMyntIdentitiesFromCurrentMeetings(db, now);
+  const currentMeetings = db
+    .prepare(
+      `SELECT meeting_id as meetingId, current_document_version_id as documentVersionId
+       FROM meetings
+       ORDER BY meeting_id;`,
+    )
+    .all() as Array<{ meetingId?: string; documentVersionId?: string }>;
+  let scannedAssertions = 0;
+  let inserted = 0;
+  let deleted = 0;
+
+  db.exec("BEGIN;");
+  try {
+    for (const meeting of currentMeetings) {
+      if (!meeting.meetingId || !meeting.documentVersionId) {
+        continue;
+      }
+      const result = deriveAssertionAssociationsForMeetingVersion(db, meeting.meetingId, meeting.documentVersionId, now);
+      scannedAssertions += result.scannedAssertions;
+      inserted += result.inserted;
+      deleted += result.deleted;
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  return { scannedAssertions, inserted, deleted };
 }
 
 function repairMissingMeetingAssertionsForVersion(
@@ -438,6 +1349,32 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       raw_json TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_invocations (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      instruction TEXT NOT NULL,
+      context_refs_json TEXT NOT NULL,
+      mc_object_type TEXT,
+      mc_object_id TEXT,
+      obsidian_task_id TEXT,
+      details_path TEXT,
+      model TEXT,
+      thinking TEXT,
+      timeout_seconds INTEGER,
+      metadata_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      session_key TEXT,
+      run_id TEXT,
+      runtime_task_id TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      terminal_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS task_flows (
       flow_id TEXT PRIMARY KEY,
       sync_mode TEXT,
@@ -629,6 +1566,7 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       display_name TEXT NOT NULL,
       primary_email TEXT,
       is_self INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'legacy',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -640,6 +1578,17 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       alias_value TEXT NOT NULL,
       created_at TEXT NOT NULL,
       UNIQUE(identity_id, alias_type, alias_value)
+    );
+
+    CREATE TABLE IF NOT EXISTS mynt_archived_items (
+      item_id TEXT PRIMARY KEY,
+      archived_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mynt_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS transcript_segments (
@@ -723,6 +1672,19 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       note TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS assertion_associations (
+      assertion_association_id TEXT PRIMARY KEY,
+      assertion_kind TEXT NOT NULL,
+      assertion_id TEXT NOT NULL,
+      meeting_id TEXT NOT NULL,
+      document_version_id TEXT NOT NULL,
+      identity_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(assertion_kind, assertion_id, identity_id, source)
+    );
+
     CREATE TABLE IF NOT EXISTS meeting_ingestion_runs (
       ingestion_run_id TEXT PRIMARY KEY,
       source_document_id TEXT,
@@ -744,7 +1706,12 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_action_assertions_meeting ON action_assertions (meeting_id, extraction_run_id, sequence);
     CREATE INDEX IF NOT EXISTS idx_decision_assertions_meeting ON decision_assertions (meeting_id, extraction_run_id, sequence);
     CREATE INDEX IF NOT EXISTS idx_evidence_links_assertion ON evidence_links (assertion_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_assertion ON assertion_associations (assertion_kind, assertion_id);
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_meeting_version ON assertion_associations (meeting_id, document_version_id);
+    CREATE INDEX IF NOT EXISTS idx_assertion_associations_identity ON assertion_associations (identity_id);
     CREATE INDEX IF NOT EXISTS idx_meeting_ingestion_runs_path ON meeting_ingestion_runs (canonical_source_path, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_identity_aliases_value ON identity_aliases (alias_value);
+    CREATE INDEX IF NOT EXISTS idx_identity_aliases_identity ON identity_aliases (identity_id);
   `);
   for (const statement of [
     "ALTER TABLE task_flows ADD COLUMN sync_mode TEXT;",
@@ -754,6 +1721,7 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
     "ALTER TABLE action_assertions ADD COLUMN details_ref TEXT;",
     "ALTER TABLE decision_assertions ADD COLUMN task_id TEXT;",
     "ALTER TABLE decision_assertions ADD COLUMN details_ref TEXT;",
+    "ALTER TABLE identities ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy';",
   ]) {
     try {
       db.exec(statement);
@@ -761,6 +1729,7 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       // Existing deployments may already have the column.
     }
   }
+  seedMyntSelfIdentity(db);
   return db;
 }
 
@@ -811,6 +1780,8 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
         documentVersionId: existingVersion.documentVersionId,
         extractionRunId: existingExtractionRunId,
       });
+      bootstrapMyntIdentitiesFromCurrentMeetings(db, input.ingestedAt);
+      deriveAssertionAssociationsForMeetingVersion(db, meetingId, existingVersion.documentVersionId, input.ingestedAt);
       const message =
         repair.insertedActions > 0 || repair.insertedDecisions > 0 || repair.updatedMeetingCounts
           ? `source path and content hash already ingested; repaired assertions actions=${repair.insertedActions} decisions=${repair.insertedDecisions}`
@@ -1134,6 +2105,9 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
       }
     }
 
+    bootstrapMyntIdentitiesFromCurrentMeetings(db, input.ingestedAt);
+    deriveAssertionAssociationsForMeetingVersion(db, meetingId, documentVersionId, input.ingestedAt);
+
     insertIngestionRun.run(
       stableId("ingestion_run", sourceDocumentId, input.contentHash, startedAt, "ingested"),
       sourceDocumentId,
@@ -1249,6 +2223,10 @@ export function rejectMeetingAssertions(db: DatabaseSync, items: MeetingAssertio
     DELETE FROM evidence_links
     WHERE assertion_kind = ? AND assertion_id = ?;
   `);
+  const deleteAssociations = db.prepare(`
+    DELETE FROM assertion_associations
+    WHERE assertion_kind = ? AND assertion_id = ?;
+  `);
   const deleteAction = db.prepare(`
     DELETE FROM action_assertions
     WHERE action_assertion_id = ?;
@@ -1268,6 +2246,7 @@ export function rejectMeetingAssertions(db: DatabaseSync, items: MeetingAssertio
         continue;
       }
       deleteEvidence.run(item.kind, item.assertionId);
+      deleteAssociations.run(item.kind, item.assertionId);
       const result = item.kind === "action" ? deleteAction.run(item.assertionId) : deleteDecision.run(item.assertionId);
       if (Number(result.changes ?? 0) > 0) {
         rejected += Number(result.changes ?? 0);

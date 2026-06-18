@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { AccountabilityGraphView } from "./accountability-graph-view";
 import { ActionReassignControl } from "./action-reassign-control";
 import { formatDisplayDate } from "../lib/date-format";
 import {
@@ -9,7 +10,8 @@ import {
   type MeetingReviewPayloadItem,
   type ReassignActionPayload,
 } from "../lib/meeting-review-client";
-import type { MyntIndex, MyntItem } from "../lib/mynt";
+import { normalizeMyAccountabilityActionStatus } from "../lib/my-accountability";
+import type { MyntIndex, MyntItem, MyntPerson } from "../lib/mynt";
 
 export type AssertionStatusFilter = "all" | "accepted" | "pending";
 
@@ -20,6 +22,7 @@ type AssertionRegisterProps = {
 };
 
 type ReviewOperation = "accept" | "reject";
+type ViewMode = "table" | "graph";
 
 const FILTERS: { id: AssertionStatusFilter; label: string }[] = [
   { id: "all", label: "All" },
@@ -53,8 +56,43 @@ function rowKey(item: MyntItem) {
   return `${item.kind}:${item.assertionId ?? item.id}`;
 }
 
+function canMarkActionDone(item: MyntItem) {
+  return item.kind === "action" && normalizeMyAccountabilityActionStatus(item.status) !== "done";
+}
+
+function buildPeople(items: MyntItem[]) {
+  const map = new Map<string, MyntPerson>();
+  for (const item of items) {
+    const current = map.get(item.person.id) || {
+      ...item.person,
+      actionCount: 0,
+      decisionCount: 0,
+      totalCount: 0,
+      actions: [],
+      decisions: [],
+    };
+    if (item.kind === "action") {
+      current.actionCount += 1;
+      current.actions.push(item);
+    } else {
+      current.decisionCount += 1;
+      current.decisions.push(item);
+    }
+    current.totalCount += 1;
+    map.set(current.id, current);
+  }
+  return [...map.values()].sort(
+    (left, right) =>
+      right.totalCount - left.totalCount ||
+      right.actionCount - left.actionCount ||
+      left.displayName.localeCompare(right.displayName),
+  );
+}
+
 export function AssertionRegister({ index, kind, statusFilter }: AssertionRegisterProps) {
   const [allItems, setAllItems] = useState(index.items);
+  const [viewMode, setViewMode] = useState<ViewMode>("table");
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -69,7 +107,9 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
   );
   const selectedItems = items.filter((item) => selectedIds.includes(rowKey(item)));
   const selectedReviewItems = selectedItems.filter((item) => item.reviewStatus === "needs_review");
+  const selectedMarkDoneItems = selectedItems.filter(canMarkActionDone);
   const reviewableItems = items.filter((item) => item.reviewStatus === "needs_review");
+  const graphPeople = useMemo(() => buildPeople(items), [items]);
   const allSelected = items.length > 0 && selectedItems.length === items.length;
   const basePath = `/accountability/${kind === "action" ? "actions" : "decisions"}`;
 
@@ -121,8 +161,44 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
     }
   }
 
+  async function markActionsDone(actionItems: MyntItem[]) {
+    const assertionIds = actionItems
+      .filter((item) => canMarkActionDone(item) && Boolean(item.assertionId))
+      .map((item) => item.assertionId as string);
+    if (assertionIds.length === 0) {
+      setMessage("No selected non-done actions with assertion IDs.");
+      return;
+    }
+    setPending(true);
+    setMessage(null);
+    try {
+      const payloads = await Promise.all(assertionIds.map((assertionId) => postMeetingReview({ operation: "mark_action_done", assertionId })));
+      const updatedAssertionIds = new Set(assertionIds);
+      setAllItems((current) =>
+        current.map((item) =>
+          item.kind === "action" && item.assertionId && updatedAssertionIds.has(item.assertionId)
+            ? { ...item, reviewStatus: "accepted", status: "done" }
+            : item,
+        ),
+      );
+      setMessage(assertionIds.length === 1 ? payloads[0].summary : `Marked ${assertionIds.length} actions done.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
   function reassignAction(assertionId: string, assignee: string) {
     return postReassign(assertionId, assignee);
+  }
+
+  function reviewItem(operation: ReviewOperation, item: MyntItem) {
+    postReview(operation, [item]);
+  }
+
+  function selectPerson(personId: string | null) {
+    setSelectedPersonId(personId);
   }
 
   async function postReassign(assertionId: string, assignee: string) {
@@ -207,6 +283,11 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
         <button type="button" className="action-trigger" onClick={() => postReview("accept", selectedReviewItems)} disabled={pending || selectedReviewItems.length === 0}>
           Accept selected
         </button>
+        {kind === "action" ? (
+          <button type="button" className="action-trigger" onClick={() => void markActionsDone(selectedMarkDoneItems)} disabled={pending || selectedMarkDoneItems.length === 0}>
+            Mark selected done
+          </button>
+        ) : null}
         <button type="button" className="meeting-review-action-button meeting-review-action-danger" onClick={() => postReview("reject", reviewableItems)} disabled={pending || reviewableItems.length === 0}>
           Reject all pending
         </button>
@@ -216,9 +297,34 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
         <span className="muted">
           {selectedItems.length} selected of {items.length} {kindLabel(kind).toLowerCase()}
         </span>
+        <div className="mynt-view-toggle" role="group" aria-label={`${kindLabel(kind)} view mode`}>
+          <button type="button" className={viewMode === "table" ? "mynt-view-toggle-active" : ""} onClick={() => setViewMode("table")} aria-pressed={viewMode === "table"}>
+            Table
+          </button>
+          <button type="button" className={viewMode === "graph" ? "mynt-view-toggle-active" : ""} onClick={() => setViewMode("graph")} aria-pressed={viewMode === "graph"}>
+            Accountability Graph
+          </button>
+        </div>
       </div>
       {message ? <p className="action-message mynt-message">{message}</p> : null}
 
+      {viewMode === "graph" ? (
+        <AccountabilityGraphView
+          items={items}
+          people={graphPeople}
+          identities={index.identities}
+          pending={pending}
+          pendingReviewOnly={statusFilter === "pending"}
+          includeSelf
+          selectedPersonId={selectedPersonId}
+          onClose={() => setViewMode("table")}
+          onSelectPerson={selectPerson}
+          onReview={reviewItem}
+          onReassign={reassignAction}
+          onMarkDone={(item) => void markActionsDone([item])}
+          onAcceptPending={(pendingItems) => postReview("accept", pendingItems)}
+        />
+      ) : (
       <div className="table-shell pending-review-table">
         <table>
           <thead>
@@ -269,6 +375,11 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
                           </button>
                         </>
                       ) : null}
+                      {kind === "action" && canMarkActionDone(item) ? (
+                        <button type="button" className="meeting-review-action-button" disabled={pending || !item.assertionId} onClick={() => void markActionsDone([item])}>
+                          Mark as done
+                        </button>
+                      ) : null}
                       {kind === "action" ? (
                         <ActionReassignControl
                           assertionId={item.assertionId}
@@ -293,6 +404,7 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

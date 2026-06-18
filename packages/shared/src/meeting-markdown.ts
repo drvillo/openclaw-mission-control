@@ -23,6 +23,7 @@ export type MeetingReviewItem = {
   evidence: string | null;
   evidenceTimestamps: string[];
   evidenceTargetTime: string | null;
+  associations: Array<{ identityId: string; displayName: string; email: string | null }>;
 };
 
 export type MeetingProvenance = {
@@ -201,6 +202,7 @@ function parseReviewItemBlock(kind: "action" | "decision", label: string, block:
     evidence,
     evidenceTimestamps,
     evidenceTargetTime: parseEvidenceTargetTime(evidence, evidenceTimestamps),
+    associations: [],
   };
 }
 

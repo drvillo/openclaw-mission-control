@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-export type WorkspaceId = "work" | "meetings" | "my-accountability" | "accountability" | "identity" | "ops";
+export type WorkspaceId = "work" | "meetings" | "my-accountability" | "accountability" | "identity" | "ops" | "self-evolution";
 
 type WorkspaceShellProps = {
   activeWorkspace: WorkspaceId;
@@ -12,6 +12,7 @@ type WorkspaceShellProps = {
   mynt: ReactNode;
   identity: ReactNode;
   ops: ReactNode;
+  selfEvolution: ReactNode;
 };
 
 const WORKSPACES: { id: WorkspaceId; label: string; href: string }[] = [
@@ -20,10 +21,11 @@ const WORKSPACES: { id: WorkspaceId; label: string; href: string }[] = [
   { id: "my-accountability", label: "My Accountability", href: "/my-accountability" },
   { id: "accountability", label: "Accountability Map", href: "/accountability" },
   { id: "identity", label: "Identity Admin", href: "/identity-admin" },
+  { id: "self-evolution", label: "Self-Evolution", href: "/self-evolution" },
   { id: "ops", label: "Fonkey Ops", href: "/ops" },
 ];
 
-export function WorkspaceShell({ activeWorkspace, work, meetings, myAccountability, mynt, identity, ops }: WorkspaceShellProps) {
+export function WorkspaceShell({ activeWorkspace, work, meetings, myAccountability, mynt, identity, ops, selfEvolution }: WorkspaceShellProps) {
   const activeContent =
     activeWorkspace === "work"
       ? work
@@ -35,7 +37,9 @@ export function WorkspaceShell({ activeWorkspace, work, meetings, myAccountabili
             ? mynt
             : activeWorkspace === "identity"
               ? identity
-              : ops;
+              : activeWorkspace === "self-evolution"
+                ? selfEvolution
+                : ops;
 
   return (
     <div className="workspace-shell">

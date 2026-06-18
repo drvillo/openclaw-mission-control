@@ -61,6 +61,7 @@ function action(id: string, assignee: string, reviewStatus: "needs_review" | "ac
     evidence: null,
     evidenceTimestamps: [],
     evidenceTargetTime: null,
+        associations: [],
   };
 }
 
@@ -84,6 +85,7 @@ function decision(id: string, owner: string, reviewStatus: "needs_review" | "acc
     evidence: null,
     evidenceTimestamps: [],
     evidenceTargetTime: null,
+        associations: [],
   };
 }
 

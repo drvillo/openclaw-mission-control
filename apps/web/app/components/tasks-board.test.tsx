@@ -50,4 +50,38 @@ describe("TasksBoard", () => {
       expect(screen.getByRole("heading", { name })).toBeInTheDocument();
     }
   });
+
+  test("renders actionable task deep links when provided", () => {
+    render(
+      <TasksBoard
+        tasks={[task("task-20260608-001", "next")]}
+        taskLinksById={{
+          "task-20260608-001": { href: "/ops/day/2026-06-08", label: "Open packet day" },
+        }}
+        selectedTaskId="task-20260608-001"
+      />,
+    );
+
+    expect(screen.getAllByRole("link", { name: "Open packet day" })[0]).toHaveAttribute("href", "/ops/day/2026-06-08");
+  });
+
+  test("opens the raw detail note by default in the selected task modal", () => {
+    const selected = {
+      ...task("task-20260608-010", "done"),
+      detail_exists: true,
+      detail_sections: {
+        request: "Plan the bridge",
+        acceptance_criteria: "Show the note",
+        execution_log: "",
+        results: "Selected architecture",
+      },
+      detail_body: "# Plan Mission Control to OpenClaw runtime bridge\n\n## Results\nSelected architecture",
+    } satisfies BoardTask;
+
+    render(<TasksBoard tasks={[selected]} selectedTaskId="task-20260608-010" />);
+
+    const rawDetail = screen.getByText("Raw detail note and references").closest("details");
+    expect(rawDetail).toHaveAttribute("open");
+    expect(screen.getByText(/# Plan Mission Control to OpenClaw runtime bridge/)).toBeInTheDocument();
+  });
 });

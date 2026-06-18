@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync as NodeDatabaseSync } from "node:sqlite";
 import {
   acceptMeetingAssertions,
   isActionWorkflowStatus,
@@ -13,6 +14,10 @@ import { NextResponse } from "next/server";
 import { MISSION_CONTROL_DB_PATH } from "../../lib/config";
 
 export const runtime = "nodejs";
+
+type DatabaseSync = NodeDatabaseSync;
+const require = createRequire(`${process.cwd()}/package.json`);
+const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 
 type MeetingAssertionReviewItem = {
   kind: "action" | "decision";

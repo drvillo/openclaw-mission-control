@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActionReassignControl, type ActionAssigneeIdentity } from "./action-reassign-control";
+import { AssertionAssociations } from "./assertion-associations";
 import { CompactSelect, type CompactSelectOption } from "./compact-select";
 import { formatDisplayDate, formatDisplayDateTime } from "../lib/date-format";
 import type { MeetingDetail, MeetingIndex, MeetingRecording, MeetingReviewItem } from "../lib/meetings";
@@ -147,6 +148,7 @@ function ReviewItemCard({
         <div className="meeting-review-title-row">
           <span className="meeting-review-label">{item.label}</span>
           <ReviewStatusBadge status={item.reviewStatus} />
+          <AssertionAssociations associations={item.associations} />
         </div>
         <div className="meeting-review-card-actions">
           {evidenceTargetTime ? (

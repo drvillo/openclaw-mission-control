@@ -1,6 +1,16 @@
-import fs from "node:fs";
 import path from "node:path";
-import { MISSION_CONTROL_STATE_DIR } from "./config";
+import {
+  approveMyntAliasInDb,
+  archiveMyntItemIdsInDb,
+  backfillAssertionAssociations,
+  backfillMyntIdentityReferences,
+  bootstrapMyntIdentitiesFromRawValues,
+  importLegacyMyntStateFile,
+  loadMyntStateFromDb,
+  openMissionControlDb,
+  updateMyntIdentityEmailInDb,
+} from "@ocmc/db";
+import { MISSION_CONTROL_DB_PATH, MISSION_CONTROL_STATE_DIR } from "./config";
 import type { MeetingIndex, MeetingRecording, MeetingReviewItem } from "./meetings";
 import type { ObsidianBoardPayload, ObsidianBoardTask } from "./openclaw";
 
@@ -15,6 +25,7 @@ export type MyntIdentity = {
   aliases: string[];
   isSelf?: boolean;
   inferred?: boolean;
+  source?: "manual" | "auto" | "legacy";
 };
 
 export type MyntState = {
@@ -56,6 +67,7 @@ export type MyntItem = {
   detailsRef: string | null;
   dueDate: string | null;
   dueText: string | null;
+  associations: Array<{ identityId: string; displayName: string; email: string | null }>;
   archived: boolean;
 };
 
@@ -163,23 +175,19 @@ function normalizeState(raw: Partial<MyntState> | null): MyntState {
       aliases: uniqueSorted([...(identity.aliases || []), identity.displayName, identity.email].filter(Boolean) as string[]),
       isSelf: Boolean(identity.isSelf) || identity.email.toLowerCase() === SELF_EMAIL,
       inferred: Boolean(identity.inferred),
+      source: identity.source,
     })),
   };
 }
 
 export function loadMyntState(): MyntState {
+  const db = openMissionControlDb(MISSION_CONTROL_DB_PATH);
   try {
-    return normalizeState(JSON.parse(fs.readFileSync(MYNT_STATE_PATH, "utf8")) as Partial<MyntState>);
-  } catch {
-    const state = defaultState();
-    saveMyntState(state);
-    return state;
+    importLegacyMyntStateFile(db, MYNT_STATE_PATH);
+    return normalizeState(loadMyntStateFromDb(db));
+  } finally {
+    db.close();
   }
-}
-
-export function saveMyntState(state: MyntState) {
-  fs.mkdirSync(path.dirname(MYNT_STATE_PATH), { recursive: true });
-  fs.writeFileSync(MYNT_STATE_PATH, `${JSON.stringify(normalizeState(state), null, 2)}\n`, "utf8");
 }
 
 export function parseActor(rawValue: string | null | undefined): ParsedActor | null {
@@ -359,6 +367,7 @@ function toMyntItem(meeting: MeetingRecording, reviewItem: MeetingReviewItem, in
     detailsRef: reviewItem.detailsRef,
     dueDate: reviewItem.dueDate,
     dueText: reviewItem.dueText,
+    associations: reviewItem.associations,
     archived: state.archivedItemIds.includes(id),
   };
 }
@@ -468,6 +477,14 @@ function isFathomTask(task: ObsidianBoardTask) {
   return Boolean(task.detail_body?.match(/^- source:\s*fathom\s*$/mu));
 }
 
+function rawIdentityValuesFromIndex(index: MeetingIndex) {
+  return index.meetings.flatMap((meeting) => [
+    ...meeting.participants,
+    ...meeting.actions.map((action) => action.assignee),
+    ...meeting.decisions.map((decision) => decision.owner),
+  ]);
+}
+
 export function previewMyntArchive(items: MyntItem[], tasks: ObsidianBoardTask[] = [], olderThanDays = 30, now = new Date()) {
   const cutoff = new Date(now);
   cutoff.setUTCDate(cutoff.getUTCDate() - olderThanDays);
@@ -517,77 +534,50 @@ export function buildMyntIndexFromState(index: MeetingIndex, state: MyntState, t
 }
 
 export function buildMyntIndex(index: MeetingIndex, taskBoard?: ObsidianBoardPayload): MyntIndex {
-  return buildMyntIndexFromState(index, loadMyntState(), taskBoard);
+  const db = openMissionControlDb(MISSION_CONTROL_DB_PATH);
+  try {
+    importLegacyMyntStateFile(db, MYNT_STATE_PATH);
+    bootstrapMyntIdentitiesFromRawValues(db, rawIdentityValuesFromIndex(index));
+    backfillMyntIdentityReferences(db);
+    const state = normalizeState(loadMyntStateFromDb(db));
+    return buildMyntIndexFromState(index, state, taskBoard);
+  } finally {
+    db.close();
+  }
 }
 
 export function approveMyntAlias(identityId: string, rawAlias: string, identityDisplayName?: string) {
-  const state = loadMyntState();
-  const parsed = parseActor(rawAlias);
-  if (!parsed) {
-    throw new Error("Alias is required");
+  const db = openMissionControlDb(MISSION_CONTROL_DB_PATH);
+  try {
+    importLegacyMyntStateFile(db, MYNT_STATE_PATH);
+    const identity = approveMyntAliasInDb(db, identityId, rawAlias, identityDisplayName);
+    backfillMyntIdentityReferences(db);
+    backfillAssertionAssociations(db);
+    return identity;
+  } finally {
+    db.close();
   }
-  let identity = state.identities.find((item) => item.id === identityId || item.email === identityId);
-  const inferredEmail = parseActor(identityId)?.email;
-  if (!identity && (identityId.startsWith("name:") || inferredEmail)) {
-    const displayName = normalizeActor(identityDisplayName || (inferredEmail ? identityId : identityId.slice("name:".length)));
-    identity = {
-      id: identityId,
-      email: inferredEmail ?? "",
-      displayName,
-      aliases: uniqueSorted([displayName, inferredEmail ?? ""]),
-      inferred: true,
-    };
-    state.identities.push(identity);
-  }
-  if (!identity) {
-    throw new Error(`Unknown identity: ${identityId}`);
-  }
-  if (parsed.email && !identity.email) {
-    identity.email = parsed.email;
-  }
-  identity.aliases = uniqueSorted([...identity.aliases, parsed.raw, parsed.displayName, parsed.email || ""]);
-  saveMyntState(state);
-  return identity;
 }
 
 export function updateMyntIdentityEmail(identityId: string, rawEmail: string, identityDisplayName?: string) {
-  const state = loadMyntState();
-  const email = normalizeActor(rawEmail).toLowerCase();
-  if (email && !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/u.test(email)) {
-    throw new Error("Enter a valid email address");
+  const db = openMissionControlDb(MISSION_CONTROL_DB_PATH);
+  try {
+    importLegacyMyntStateFile(db, MYNT_STATE_PATH);
+    const identity = updateMyntIdentityEmailInDb(db, identityId, rawEmail, identityDisplayName);
+    backfillMyntIdentityReferences(db);
+    backfillAssertionAssociations(db);
+    return identity;
+  } finally {
+    db.close();
   }
-  const conflictingIdentity = email ? state.identities.find((item) => item.email === email && item.id !== identityId) : null;
-  if (conflictingIdentity) {
-    throw new Error(`Email is already assigned to ${conflictingIdentity.displayName}`);
-  }
-
-  let identity = state.identities.find((item) => item.id === identityId || item.email === identityId);
-  const inferredEmail = parseActor(identityId)?.email;
-  if (!identity && (identityId.startsWith("name:") || inferredEmail)) {
-    const displayName = normalizeActor(identityDisplayName || (inferredEmail ? identityId : identityId.slice("name:".length)));
-    identity = {
-      id: identityId,
-      email: inferredEmail ?? "",
-      displayName,
-      aliases: uniqueSorted([displayName, inferredEmail ?? ""]),
-      inferred: true,
-    };
-    state.identities.push(identity);
-  }
-  if (!identity) {
-    throw new Error(`Unknown identity: ${identityId}`);
-  }
-
-  const previousEmail = identity.email;
-  identity.email = email;
-  identity.aliases = uniqueSorted([...identity.aliases.filter((alias) => alias.toLowerCase() !== previousEmail), email]);
-  saveMyntState(state);
-  return identity;
 }
 
 export function archiveMyntItems(ids: string[]) {
-  const state = loadMyntState();
-  state.archivedItemIds = uniqueSorted([...state.archivedItemIds, ...ids]);
-  saveMyntState(state);
-  return state.archivedItemIds;
+  const db = openMissionControlDb(MISSION_CONTROL_DB_PATH);
+  try {
+    importLegacyMyntStateFile(db, MYNT_STATE_PATH);
+    return archiveMyntItemIdsInDb(db, ids);
+  } finally {
+    db.close();
+  }
 }

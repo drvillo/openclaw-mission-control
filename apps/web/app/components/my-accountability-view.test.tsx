@@ -34,6 +34,7 @@ function item(partial: Partial<MyntItem> & Pick<MyntItem, "id" | "kind" | "revie
     detailsRef: null,
     dueDate: null,
     dueText: null,
+    associations: [],
     archived: false,
     ...partial,
   };

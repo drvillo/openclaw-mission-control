@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { ActionReassignControl } from "./action-reassign-control";
+import { AssertionAssociations } from "./assertion-associations";
 import { AppLink } from "./app-link";
 import { formatDisplayDate } from "../lib/date-format";
 import { normalizeMyAccountabilityActionStatus, type MyAccountabilityActionStatus } from "../lib/my-accountability";
@@ -32,12 +33,12 @@ export function reviewStatusLabel(status: MyntItem["reviewStatus"]) {
   return status === "accepted" ? "Accepted" : "Needs Review";
 }
 
+export function StatusBadge({ status, children }: { status: string; children: ReactNode }) {
+  return <span className={`meeting-review-status meeting-review-status-${status}`}>{children}</span>;
+}
+
 export function ReviewStatusBadge({ status }: { status: MyntItem["reviewStatus"] }) {
-  return (
-    <span className={`meeting-review-status meeting-review-status-${status}`}>
-      {reviewStatusLabel(status)}
-    </span>
-  );
+  return <StatusBadge status={status}>{reviewStatusLabel(status)}</StatusBadge>;
 }
 
 export function displayRawItemStatus(status: string | null) {
@@ -71,6 +72,7 @@ export function AssertionCard({
             {item.kind === "action" ? "Action" : "Decision"}
           </span>
           <ReviewStatusBadge status={item.reviewStatus} />
+          <AssertionAssociations associations={item.associations} />
         </div>
         <time dateTime={item.meetingDate}>{formatDisplayDate(item.meetingDate)}</time>
       </div>

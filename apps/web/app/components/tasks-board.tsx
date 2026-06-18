@@ -50,6 +50,8 @@ type BoardTask = {
 
 type TasksBoardProps = {
   tasks: BoardTask[];
+  selectedTaskId?: string;
+  taskLinksById?: Record<string, { href: string; label: string }>;
 };
 
 type TaskDraft = {
@@ -286,7 +288,7 @@ function hasDetailContent(task: BoardTask | null, draft: TaskDraft | null) {
   );
 }
 
-export function TasksBoard({ tasks }: TasksBoardProps) {
+export function TasksBoard({ tasks, selectedTaskId: focusedTaskId, taskLinksById = {} }: TasksBoardProps) {
   const [items, setItems] = useState(tasks);
   const [search, setSearch] = useState("");
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -308,6 +310,15 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
   useEffect(() => {
     setItems(tasks);
   }, [tasks]);
+
+  useEffect(() => {
+    if (!focusedTaskId) {
+      return;
+    }
+    if (tasks.some((task) => task.id === focusedTaskId)) {
+      setSelectedTaskId(focusedTaskId);
+    }
+  }, [focusedTaskId, tasks]);
 
   const selectedTask = selectedTaskId ? items.find((task) => task.id === selectedTaskId) ?? null : null;
 
@@ -760,6 +771,7 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
         }}
         renderCard={(task) => {
           const taskActionDisabled = pendingActionIds.has(task.id) || pendingMoveId === task.id || pendingBulkAction !== null;
+          const taskLink = taskLinksById[task.id];
           return (
                 <article
                   className={`task-card ${pendingMoveId === task.id ? "task-card-pending" : ""}`}
@@ -795,6 +807,17 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                   <p className="muted">
                     {task.owner} · {task.assignee_type}:{task.assignee}
                   </p>
+                  {taskLink ? (
+                    <a
+                      className="task-inline-link"
+                      href={taskLink.href}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      {taskLink.label}
+                    </a>
+                  ) : null}
                   <div className="task-card-meta">
                     <TaskBadge tone="hot">Created {formatDate(task.created_on)}</TaskBadge>
                     {task.remind_on !== "none" ? <TaskBadge tone="warning">Due {formatDate(task.remind_on)}</TaskBadge> : null}
@@ -821,6 +844,11 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                 <p className="muted">Canonical Obsidian task editor.</p>
               </div>
               <div className="task-modal-actions">
+                {taskLinksById[selectedTask.id] ? (
+                  <a className="action-trigger" href={taskLinksById[selectedTask.id].href}>
+                    {taskLinksById[selectedTask.id].label}
+                  </a>
+                ) : null}
                 <button type="button" className="task-modal-close" onClick={closeModal}>
                   Close
                 </button>
@@ -981,7 +1009,7 @@ export function TasksBoard({ tasks }: TasksBoardProps) {
                 </section>
               ) : null}
 
-              <details className="routing-details">
+              <details className="routing-details" open>
                 <summary>Raw detail note and references</summary>
                 <div className="task-raw-meta">
                   <p>

@@ -2,6 +2,7 @@
 
 import { startTransition, useMemo, useState } from "react";
 import { AssertionCard, type AssertionReviewOperation } from "./assertion-card";
+import { AssertionListLane } from "./assertion-list-lane";
 import { KanbanBoard } from "./kanban-board";
 import {
   MY_ACCOUNTABILITY_ACTION_COLUMNS,
@@ -154,27 +155,18 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
       {activeTab === "actions" ? (
         <div className="my-accountability-tab-panel" role="tabpanel">
           <section className="my-accountability-section">
-            <header className="my-accountability-section-header">
-              <div>
-                <h3>Review inbox</h3>
-                <p className="muted">Self-assigned action assertions waiting for review.</p>
-              </div>
-              <span className="mynt-lane-count">{reviewActions.length}</span>
-            </header>
-            <div className="mynt-lane-list my-accountability-review-list">
-              {reviewActions.map((item) => (
-                <AssertionCard
-                  key={item.id}
-                  item={item}
-                  pending={pending}
-                  assigneeIdentities={index.identities}
-                  onReview={reviewItem}
-                  onReassign={reassignAction}
-                  onMarkDone={markActionDone}
-                />
-              ))}
-              {reviewActions.length === 0 ? <div className="mynt-lane-empty">No self-assigned actions need review.</div> : null}
-            </div>
+            <AssertionListLane
+              title="Review inbox"
+              description="Self-assigned action assertions waiting for review."
+              items={reviewActions}
+              pending={pending}
+              assigneeIdentities={index.identities}
+              emptyText="No self-assigned actions need review."
+              className="my-accountability-review-lane"
+              onReview={reviewItem}
+              onReassign={reassignAction}
+              onMarkDone={markActionDone}
+            />
           </section>
 
           <section className="my-accountability-section">
@@ -216,35 +208,28 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
       ) : (
         <div className="my-accountability-tab-panel my-accountability-decisions" role="tabpanel">
           <section className="my-accountability-section">
-            <header className="my-accountability-section-header">
-              <div>
-                <h3>Review inbox</h3>
-                <p className="muted">Self-assigned decision assertions waiting for review.</p>
-              </div>
-              <span className="mynt-lane-count">{decisions.pending.length}</span>
-            </header>
-            <div className="mynt-lane-list my-accountability-review-list">
-              {decisions.pending.map((item) => (
-                <AssertionCard key={item.id} item={item} pending={pending} assigneeIdentities={index.identities} onReview={reviewItem} />
-              ))}
-              {decisions.pending.length === 0 ? <div className="mynt-lane-empty">No self-assigned decisions need review.</div> : null}
-            </div>
+            <AssertionListLane
+              title="Review inbox"
+              description="Self-assigned decision assertions waiting for review."
+              items={decisions.pending}
+              pending={pending}
+              assigneeIdentities={index.identities}
+              emptyText="No self-assigned decisions need review."
+              className="my-accountability-review-lane"
+              onReview={reviewItem}
+            />
           </section>
 
           <section className="my-accountability-section">
-            <header className="my-accountability-section-header">
-              <div>
-                <h3>Decision log</h3>
-                <p className="muted">Accepted self-assigned decisions in chronological order.</p>
-              </div>
-              <span className="mynt-lane-count">{decisions.accepted.length}</span>
-            </header>
-            <div className="mynt-lane-list my-accountability-review-list">
-              {decisions.accepted.map((item) => (
-                <AssertionCard key={item.id} item={item} pending={pending} assigneeIdentities={index.identities} />
-              ))}
-              {decisions.accepted.length === 0 ? <div className="mynt-lane-empty">No accepted decisions yet.</div> : null}
-            </div>
+            <AssertionListLane
+              title="Decision log"
+              description="Accepted self-assigned decisions in chronological order."
+              items={decisions.accepted}
+              pending={pending}
+              assigneeIdentities={index.identities}
+              emptyText="No accepted decisions yet."
+              className="my-accountability-review-lane"
+            />
           </section>
         </div>
       )}

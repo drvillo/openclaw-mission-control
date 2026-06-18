@@ -7,6 +7,7 @@ import { MyAccountabilityView } from "./components/my-accountability-view";
 import { MyntView } from "./components/mynt-view";
 import { CronRunsPanel, RuntimeTasksPanel, TaskFlowsPanel } from "./components/operations-panels";
 import { RoutingPanel } from "./components/routing-panel";
+import { SelfEvolutionPanel } from "./components/self-evolution-panel";
 import { TasksBoard } from "./components/tasks-board";
 import { WorkspaceShell, type WorkspaceId } from "./components/workspace-shell";
 import { formatDisplayDate, formatDisplayDateTime } from "./lib/date-format";
@@ -15,6 +16,7 @@ import { loadMeetingIndex } from "./lib/meetings";
 import { buildMyntIndex } from "./lib/mynt";
 import { groupAcceptedSelfAssignedActions, partitionSelfAssignedDecisions, pendingSelfAssignedActions, selfAssignedActions } from "./lib/my-accountability";
 import { loadObsidianTaskBoard } from "./lib/openclaw";
+import { buildSelfEvolutionDayHref } from "./lib/self-evolution-links";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -94,18 +96,24 @@ export async function MissionControlPage({
   focusedItemId,
   focusedTime,
   expandedPersonId,
+  selectedTaskId,
   pendingReviewOnly = false,
   assertionKind,
   assertionStatusFilter = "all",
+  selfEvolutionDate,
+  selfEvolutionPacketId,
 }: {
   activeWorkspace?: WorkspaceId;
   selectedMeetingId?: string;
   focusedItemId?: string;
   focusedTime?: string;
   expandedPersonId?: string;
+  selectedTaskId?: string;
   pendingReviewOnly?: boolean;
   assertionKind?: "action" | "decision";
   assertionStatusFilter?: AssertionStatusFilter;
+  selfEvolutionDate?: string;
+  selfEvolutionPacketId?: string;
 }) {
   const state = loadDashboardState();
   const taskBoard = await loadObsidianTaskBoard();
@@ -118,6 +126,13 @@ export async function MissionControlPage({
   const pendingMeetingDecisions = meetingDecisionItems.filter((item) => item.reviewStatus === "needs_review").length;
   const activeMyntActions = myntIndex.items.filter((item) => item.kind === "action" && !item.archived);
   const activeMyntDecisions = myntIndex.items.filter((item) => item.kind === "decision" && !item.archived);
+  const selfEvolution = state.selfEvolution;
+  const selfEvolutionCronJob =
+    state.cronJobs.find((job) => job.jobId === selfEvolution.activeCronId) ??
+    state.cronJobs.find((job) => job.name.toLowerCase().includes("supervised self-evolution"));
+  const selfEvolutionTaskLinks = Object.fromEntries(
+    selfEvolution.runs.flatMap((run) => (run.reviewTask?.id ? [[run.reviewTask.id, { href: buildSelfEvolutionDayHref(run.date), label: "Open improvement day" }]] : [])),
+  );
   const archivedMyntActions = myntIndex.items.filter((item) => item.kind === "action" && item.archived);
   const archivedMyntDecisions = myntIndex.items.filter((item) => item.kind === "decision" && item.archived);
   const pendingMyntActions = activeMyntActions.filter((item) => item.reviewStatus === "needs_review").length;
@@ -145,7 +160,7 @@ export async function MissionControlPage({
       </section>
 
       <Panel title="Obsidian Tasks" copy="Live kanban view reconstructed from the canonical Obsidian task board and detail notes.">
-        <TasksBoard tasks={taskBoard.tasks} />
+        <TasksBoard tasks={taskBoard.tasks} selectedTaskId={selectedTaskId} taskLinksById={selfEvolutionTaskLinks} />
       </Panel>
     </div>
   );
@@ -306,6 +321,38 @@ export async function MissionControlPage({
     </div>
   );
 
+  const selfEvolutionWorkspace = (
+    <div className="workspace-stack">
+      <section className="workspace-hero">
+        <div>
+          <p className="eyebrow">Supervised System Evolution</p>
+          <h2>Self-Evolution</h2>
+          <p className="intro">Daily analyzer proposals, review decisions, and implementation launches backed by Obsidian notes and the OpenClaw runtime path.</p>
+        </div>
+      </section>
+
+      <Panel
+        title="Daily Improvements"
+        copy="Review proposed improvements, discard noise, or create/reuse an implementation task and launch the selected agent."
+      >
+        <SelfEvolutionPanel
+          selfEvolution={selfEvolution}
+          cronJob={
+            selfEvolutionCronJob
+              ? {
+                  lastRunStatus: selfEvolutionCronJob.lastRunStatus,
+                  lastRunAtMs: selfEvolutionCronJob.lastRunAtMs,
+                  nextRunAtMs: selfEvolutionCronJob.nextRunAtMs,
+                }
+              : null
+          }
+          selectedDate={selfEvolutionDate}
+          selectedPacketId={selfEvolutionPacketId}
+        />
+      </Panel>
+    </div>
+  );
+
   const fonkeyOps = (
     <div className="workspace-stack">
       <section className="workspace-hero workspace-hero-ops">
@@ -341,7 +388,39 @@ export async function MissionControlPage({
         <RoutingPanel groups={state.routingGroups} />
       </Panel>
 
-      <Panel title="Nightly Improvement Loop" copy="Cron visibility for the daily self-improvement review and related scheduled system work.">
+      <Panel title="Supervised Self-Evolution" copy="Compact status for the daily supervised review loop. Full review and actions live in the Self-Evolution workspace.">
+        <section className="ops-grid">
+          <div className="ops-field">
+            <span>Latest day</span>
+            <strong>{selfEvolution.latestDate ? formatDisplayDate(selfEvolution.latestDate) : "none"}</strong>
+            <small>{selfEvolution.latestGeneratedAt ? `Generated ${formatDateTime(selfEvolution.latestGeneratedAt)}` : "No daily note found yet."}</small>
+          </div>
+          <div className="ops-field">
+            <span>Proposals</span>
+            <strong>{selfEvolution.packetCount}</strong>
+            <small>{selfEvolution.reviewTaskId ? `Review task ${selfEvolution.reviewTaskId} · ${selfEvolution.reviewTaskStatus ?? "unknown"}` : "No active review task found."}</small>
+          </div>
+          <div className="ops-field">
+            <span>Production cron</span>
+            <strong>{selfEvolutionCronJob?.lastRunStatus ?? "none"}</strong>
+            <small>
+              Last {formatDateTime(selfEvolutionCronJob?.lastRunAtMs ?? null)} · Next {formatDateTime(selfEvolutionCronJob?.nextRunAtMs ?? null)}
+            </small>
+          </div>
+        </section>
+        <div className="action-row ops-action-row">
+          <a className="metric-action" href="/self-evolution">
+            Open Self-Evolution
+          </a>
+          {selfEvolution.latestDate ? (
+            <a className="metric-action" href={buildSelfEvolutionDayHref(selfEvolution.latestDate)}>
+              Open latest day
+            </a>
+          ) : null}
+        </div>
+      </Panel>
+
+      <Panel title="Cron Jobs" copy="Detailed cron definitions and schedule state. Self-evolution status above only keeps compact execution visibility.">
         <div className="table-shell">
           <table>
             <thead>
@@ -377,7 +456,7 @@ export async function MissionControlPage({
         </div>
       </Panel>
 
-      <Panel title="Cron Run History" copy="Recent execution history, including the nightly recommendation job and task-board hygiene sweeps.">
+      <Panel title="Cron Run History" copy="Recent execution history, including self-evolution review and task-board hygiene sweeps.">
         <CronRunsPanel items={state.cronRuns} />
       </Panel>
 
@@ -528,7 +607,16 @@ export async function MissionControlPage({
 
   return (
     <main className="page-shell">
-      <WorkspaceShell activeWorkspace={activeWorkspace} work={myWork} meetings={myMeetings} myAccountability={myAccountability} mynt={mynt} identity={identity} ops={fonkeyOps} />
+      <WorkspaceShell
+        activeWorkspace={activeWorkspace}
+        work={myWork}
+        meetings={myMeetings}
+        myAccountability={myAccountability}
+        mynt={mynt}
+        identity={identity}
+        ops={fonkeyOps}
+        selfEvolution={selfEvolutionWorkspace}
+      />
     </main>
   );
 }

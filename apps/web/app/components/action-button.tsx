@@ -5,7 +5,7 @@ import { startTransition, useState } from "react";
 type ActionButtonProps = {
   endpoint: string;
   label: string;
-  body?: Record<string, string>;
+  body?: Record<string, unknown>;
   confirmText?: string;
   disabled?: boolean;
 };

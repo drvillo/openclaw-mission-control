@@ -1,17 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   acceptMeetingAssertions,
+  approveMyntAliasInDb,
+  backfillAssertionAssociations,
   countRows,
+  importLegacyMyntStateFile,
   isActionWorkflowStatus,
+  loadMyntStateFromDb,
   markActionAssertionDone,
   openMissionControlDb,
   reassignActionAssertion,
   rejectMeetingAssertions,
+  syncMyntIdentitiesToDb,
+  updateMyntIdentityEmailInDb,
   updateActionAssertionStatus,
 } from "@ocmc/db";
 import { handleIngestMeetingsRequest } from "./ingestion-api";
@@ -112,6 +118,127 @@ ${FENCE}
 <!-- FATHOM:SECTION provenance:end -->
 `;
 
+function syncSampleIdentities(db: DatabaseSync) {
+  syncMyntIdentitiesToDb(db, [
+    {
+      id: "ferran@example.com",
+      email: "ferran@example.com",
+      displayName: "Ferran Lemus",
+      aliases: ["Ferran Lemus"],
+    },
+    {
+      id: "francesco@lunarrails.io",
+      email: "francesco@lunarrails.io",
+      displayName: "Francesco Vivoli",
+      aliases: ["Francesco Vivoli", "francesco@lunarrails.io"],
+      isSelf: true,
+    },
+    {
+      id: "alice@example.com",
+      email: "alice@example.com",
+      displayName: "Alice Example",
+      aliases: ["Alice Example"],
+    },
+    {
+      id: "bob@example.com",
+      email: "bob@example.com",
+      displayName: "Bob Example",
+      aliases: ["Bob Example"],
+    },
+    {
+      id: "cara@example.com",
+      email: "cara@example.com",
+      displayName: "Cara Example",
+      aliases: ["Cara Example"],
+    },
+  ]);
+}
+
+function assertionAssociationRows(db: DatabaseSync) {
+  return db.prepare(`
+    SELECT assertion_kind as assertionKind,
+           assertion_id as assertionId,
+           identity_id as identityId,
+           source
+    FROM assertion_associations
+    ORDER BY assertion_kind, assertion_id, identity_id, source;
+  `).all() as Array<{ assertionKind?: string; assertionId?: string; identityId?: string; source?: string }>;
+}
+
+test("legacy Mynt state imports to sqlite and deletes the json file", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-mynt-legacy-"));
+  const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  const statePath = path.join(root, "mynt-identities.json");
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        showSelfDefault: true,
+        archivedItemIds: ["action-old"],
+        identities: [
+          {
+            id: "legacy@example.com",
+            email: "legacy@example.com",
+            displayName: "Legacy Person",
+            aliases: ["LP"],
+          },
+          {
+            id: "name:auto person",
+            email: "",
+            displayName: "Auto Person",
+            aliases: ["Auto Person"],
+            inferred: true,
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const imported = importLegacyMyntStateFile(db, statePath, "2026-06-01T00:00:00.000Z");
+  const state = loadMyntStateFromDb(db);
+
+  assert.equal(imported.imported, true);
+  assert.equal(existsSync(statePath), false);
+  assert.equal(state.showSelfDefault, true);
+  assert.deepEqual(state.archivedItemIds, ["action-old"]);
+  assert.equal(state.identities.some((identity) => identity.id === "francesco@lunarrails.io" && identity.isSelf), true);
+  assert.equal(state.identities.find((identity) => identity.id === "legacy@example.com")?.source, "legacy");
+  assert.equal(state.identities.find((identity) => identity.id === "name:auto person")?.source, "auto");
+});
+
+test("identity admin alias approval is exclusive and email updates reject conflicts", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-mynt-admin-"));
+  const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  syncMyntIdentitiesToDb(db, [
+    {
+      id: "alice@example.com",
+      email: "alice@example.com",
+      displayName: "Alice Example",
+      aliases: ["Alice Example", "Shared Alias"],
+    },
+    {
+      id: "bob@example.com",
+      email: "bob@example.com",
+      displayName: "Bob Example",
+      aliases: ["Bob Example"],
+    },
+  ]);
+
+  approveMyntAliasInDb(db, "bob@example.com", "Shared Alias", "Bob Example", "2026-06-01T00:00:00.000Z");
+  const sharedOwners = db
+    .prepare("SELECT identity_id as identityId FROM identity_aliases WHERE lower(alias_value) = 'shared alias' ORDER BY identity_id;")
+    .all() as Array<{ identityId?: string }>;
+  assert.deepEqual(sharedOwners.map((row) => row.identityId), ["bob@example.com"]);
+
+  assert.throws(() => updateMyntIdentityEmailInDb(db, "bob@example.com", "alice@example.com"), /Email is already assigned to Alice Example/u);
+  const updated = updateMyntIdentityEmailInDb(db, "bob@example.com", "bob.new@example.com", "Bob Example", "2026-06-01T00:05:00.000Z");
+  assert.equal(updated.email, "bob.new@example.com");
+  assert.equal(updated.aliases.includes("bob.new@example.com"), true);
+});
+
 test("buildMeetingIngestionPayload parses current Obsidian meeting format", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-payload-"));
   const meetingPath = path.join(root, "2026-05-26-fathom-recording-149332762.md");
@@ -207,6 +334,115 @@ test("ingestMeetingNoteFile stores immutable versions and is idempotent by path 
   assert.equal(summaryRow?.detailsRef, "[[Tasks/Details/mining-kickoff#C1]]");
 });
 
+test("new meeting ingestion creates two-person assertion associations without changing primary actor fields", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-associations-"));
+  const vault = path.join(root, "vault");
+  mkdirSync(vault, { recursive: true });
+  const meetingPath = path.join(vault, "2026-05-26-fathom-recording-149332762.md");
+  const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  writeFileSync(meetingPath, SAMPLE_MEETING, "utf8");
+  syncSampleIdentities(db);
+
+  ingestMeetingNoteFile(db, meetingPath, {
+    capturedAt: "2026-05-30T00:00:00.000Z",
+    ingestedAt: "2026-05-31T00:00:00.000Z",
+    syncMyntIdentities: false,
+  });
+
+  const rows = assertionAssociationRows(db);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => ({ assertionKind: row.assertionKind, identityId: row.identityId, source: row.source })), [
+    { assertionKind: "action", identityId: "ferran@example.com", source: "meeting_participant" },
+    { assertionKind: "decision", identityId: "ferran@example.com", source: "meeting_participant" },
+  ]);
+
+  const primaryRows = db.prepare(`
+    SELECT aa.raw_assignee as rawAssignee, da.raw_owner as rawOwner
+    FROM action_assertions aa
+    CROSS JOIN decision_assertions da
+    LIMIT 1;
+  `).get() as { rawAssignee?: string; rawOwner?: string } | undefined;
+  assert.equal(primaryRows?.rawAssignee, "Francesco Vivoli");
+  assert.equal(primaryRows?.rawOwner, "Francesco Vivoli");
+});
+
+test("unresolved two-person participants are skipped for assertion associations", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-associations-unresolved-"));
+  const vault = path.join(root, "vault");
+  mkdirSync(vault, { recursive: true });
+  const meetingPath = path.join(vault, "2026-05-26-fathom-recording-149332762.md");
+  const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  writeFileSync(meetingPath, SAMPLE_MEETING.replace(`  - "Ferran Lemus"`, `  - "Ferran"`).replace("- Ferran Lemus", "- Ferran"), "utf8");
+  syncMyntIdentitiesToDb(db, [
+    {
+      id: "francesco@lunarrails.io",
+      email: "francesco@lunarrails.io",
+      displayName: "Francesco Vivoli",
+      aliases: ["Francesco Vivoli"],
+    },
+  ]);
+
+  ingestMeetingNoteFile(db, meetingPath, {
+    capturedAt: "2026-05-30T00:00:00.000Z",
+    ingestedAt: "2026-05-31T00:00:00.000Z",
+    syncMyntIdentities: false,
+  });
+
+  const rows = assertionAssociationRows(db);
+  assert.deepEqual(rows.map((row) => ({ assertionKind: row.assertionKind, identityId: row.identityId, source: row.source })), []);
+  const ferranIdentity = db.prepare("SELECT COUNT(*) as count FROM identities WHERE identity_id = 'name:ferran';").get() as
+    | { count?: number }
+    | undefined;
+  assert.equal(ferranIdentity?.count, 0);
+});
+
+test("multi-person associations include every resolved non-primary participant and backfill is idempotent", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-associations-multi-"));
+  const vault = path.join(root, "vault");
+  mkdirSync(vault, { recursive: true });
+  const meetingPath = path.join(vault, "2026-06-01-fathom-recording-149999999.md");
+  const multiPersonMeeting = SAMPLE_MEETING
+    .replaceAll("LR Mining Kick off", "Three person planning")
+    .replaceAll("149332762", "149999999")
+    .replace(`  - "Ferran Lemus"\n  - "Francesco Vivoli"`, `  - "Alice Example"\n  - "Bob Example"\n  - "Cara Example"`)
+    .replace("- Ferran Lemus\n- Francesco Vivoli", "- Alice Example\n- Bob Example\n- Cara Example")
+    .replaceAll("Francesco Vivoli", "Alice Example")
+    .replace("- [00:30:41] Alice Example: Go ahead.", "- [00:30:41] Cara Example: Go ahead.")
+    .replace("[00:30:41] Alice Example: Go ahead.", "[00:30:41] Bob Example: Full transcript only.")
+    .replace("[00:30:43] Alice Example: I'll add you now and we'll clarify.", "[00:30:43] Alice Example: I'll add you now and we'll clarify.");
+  const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  writeFileSync(meetingPath, multiPersonMeeting, "utf8");
+  syncSampleIdentities(db);
+
+  ingestMeetingNoteFile(db, meetingPath, {
+    capturedAt: "2026-06-01T00:00:00.000Z",
+    ingestedAt: "2026-06-01T00:05:00.000Z",
+    syncMyntIdentities: false,
+  });
+
+  const firstRows = assertionAssociationRows(db);
+  assert.deepEqual(firstRows.map((row) => ({ assertionKind: row.assertionKind, identityId: row.identityId, source: row.source })), [
+    { assertionKind: "action", identityId: "bob@example.com", source: "meeting_participant" },
+    { assertionKind: "action", identityId: "cara@example.com", source: "meeting_participant" },
+    { assertionKind: "decision", identityId: "bob@example.com", source: "meeting_participant" },
+    { assertionKind: "decision", identityId: "cara@example.com", source: "meeting_participant" },
+  ]);
+
+  const firstBackfill = backfillAssertionAssociations(db, "2026-06-01T00:10:00.000Z");
+  assert.equal(firstBackfill.scannedAssertions, 2);
+  assert.equal(firstBackfill.inserted, 4);
+  assert.equal(firstBackfill.deleted, 4);
+  const secondBackfill = backfillAssertionAssociations(db, "2026-06-01T00:15:00.000Z");
+  assert.equal(secondBackfill.inserted, 4);
+  assert.equal(secondBackfill.deleted, 4);
+  assert.deepEqual(assertionAssociationRows(db).map((row) => row.identityId), [
+    "bob@example.com",
+    "cara@example.com",
+    "bob@example.com",
+    "cara@example.com",
+  ]);
+});
+
 test("noop ingestion repairs missing legacy action assertions from stored meeting notes", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-repair-"));
   const vault = path.join(root, "vault");
@@ -286,9 +522,11 @@ test("meeting assertion review accepts pending rows and rejects rows destructive
   const meetingPath = path.join(vault, "2026-05-26-fathom-recording-149332762.md");
   writeFileSync(meetingPath, SAMPLE_MEETING, "utf8");
   const db = openMissionControlDb(path.join(root, "mission-control.sqlite"));
+  syncSampleIdentities(db);
   ingestMeetingNoteFile(db, meetingPath, {
     capturedAt: "2026-05-30T00:00:00.000Z",
     ingestedAt: "2026-05-31T00:00:00.000Z",
+    syncMyntIdentities: false,
   });
 
   const action = db.prepare(`
@@ -315,6 +553,10 @@ test("meeting assertion review accepts pending rows and rejects rows destructive
   assert.deepEqual(rejected, { accepted: 0, rejected: 1 });
   assert.equal(countRows(db, "decision_assertions"), 0);
   assert.equal(countRows(db, "evidence_links"), 2);
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) as count FROM assertion_associations WHERE assertion_kind = 'decision';`).get() as { count?: number } | undefined)?.count,
+    0,
+  );
   const meetingRow = db.prepare(`
     SELECT action_count as actionCount, decision_count as decisionCount
     FROM meetings

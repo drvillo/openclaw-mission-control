@@ -1,9 +1,9 @@
 import { openMissionControlDb } from "@ocmc/db";
 import { DATABASE_PATH, FATHOM_RECORDINGS_ROOT } from "./config";
-import { backfillMeetingNotes } from "./meetings-ingestion";
+import { backfillMeetingAssertionAssociations, backfillMeetingNotes } from "./meetings-ingestion";
 import { refreshMissionControlState } from "./refresh";
 
-type WorkerCommand = "refresh" | "backfill-meetings";
+type WorkerCommand = "refresh" | "backfill-meetings" | "backfill-assertion-associations";
 
 type CliOptions = {
   command: WorkerCommand;
@@ -21,7 +21,7 @@ function parseArgs(argv: string[]): CliOptions {
     if (!argument) {
       continue;
     }
-    if (argument === "refresh" || argument === "backfill-meetings") {
+    if (argument === "refresh" || argument === "backfill-meetings" || argument === "backfill-assertion-associations") {
       command = argument;
       continue;
     }
@@ -52,6 +52,13 @@ async function main() {
     const summary = backfillMeetingNotes(db, {
       rootDir: options.rootDir ?? FATHOM_RECORDINGS_ROOT,
     });
+    process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
+    return;
+  }
+
+  if (options.command === "backfill-assertion-associations") {
+    const db = openMissionControlDb(options.dbPath ?? DATABASE_PATH);
+    const summary = backfillMeetingAssertionAssociations(db);
     process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
     return;
   }

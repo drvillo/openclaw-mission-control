@@ -3,14 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  backfillAssertionAssociations,
   ingestMeetingDocument,
+  importLegacyMyntStateFile,
   recordMeetingIngestionFailure,
   type MeetingIngestionEvidenceLink,
   type MeetingIngestionPayload,
   type MeetingIngestionResult,
 } from "@ocmc/db";
 import { parseMeetingMarkdown, type MeetingReviewItem } from "@ocmc/shared";
-import { FATHOM_RECORDINGS_ROOT, OBSIDIAN_VAULT } from "./config";
+import { FATHOM_RECORDINGS_ROOT, MISSION_CONTROL_STATE_DIR, OBSIDIAN_VAULT } from "./config";
 
 type IngestionErrorKind = "invalid_path" | "not_found" | "read_failed" | "parse_failed" | "ingest_failed";
 
@@ -19,6 +21,7 @@ export type IngestMeetingNotePathOptions = {
   ingestedAt?: string;
   vaultRoot?: string;
   allowedRoot?: string;
+  syncMyntIdentities?: boolean;
 };
 
 export type MeetingNotePathIngestionResult = {
@@ -63,6 +66,10 @@ function buildAssertionFingerprint(kind: "action" | "decision", item: MeetingRev
 
 function sortStrings(values: string[]) {
   return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function syncMyntIdentityState(db: DatabaseSync): void {
+  importLegacyMyntStateFile(db, path.join(MISSION_CONTROL_STATE_DIR, "mynt-identities.json"));
 }
 
 export function canonicalizeMeetingSourcePath(filePath: string) {
@@ -254,10 +261,13 @@ export function buildMeetingIngestionPayload(
 export function ingestMeetingNoteFile(
   db: DatabaseSync,
   filePath: string,
-  options?: { capturedAt?: string; ingestedAt?: string },
+  options?: { capturedAt?: string; ingestedAt?: string; syncMyntIdentities?: boolean },
 ): MeetingIngestionResult {
   const absolutePath = path.resolve(filePath);
   const markdown = fs.readFileSync(absolutePath, "utf8");
+  if (options?.syncMyntIdentities !== false) {
+    syncMyntIdentityState(db);
+  }
   return ingestMeetingDocument(db, buildMeetingIngestionPayload(absolutePath, markdown, options));
 }
 
@@ -317,6 +327,9 @@ export function ingestMeetingNotePath(
       ingestedAt,
       vaultRoot: realVaultRoot,
     });
+    if (options.syncMyntIdentities !== false) {
+      syncMyntIdentityState(db);
+    }
     const result = ingestMeetingDocument(db, payload);
     return {
       ...result,
@@ -438,6 +451,16 @@ export type BackfillMeetingNotesOptions = {
   filePaths?: string[];
   startedAt?: string;
   vaultRoot?: string;
+};
+
+export type BackfillAssertionAssociationsSummary = {
+  startedAt: string;
+  finishedAt: string;
+  identitiesSynced: number;
+  aliasesInserted: number;
+  scannedAssertions: number;
+  inserted: number;
+  deleted: number;
 };
 
 function buildExpectation(payload: MeetingIngestionPayload): MeetingBackfillExpectation {
@@ -774,5 +797,20 @@ export function backfillMeetingNotes(db: DatabaseSync, options: BackfillMeetingN
     },
     files,
     reconciliation,
+  };
+}
+
+export function backfillMeetingAssertionAssociations(db: DatabaseSync): BackfillAssertionAssociationsSummary {
+  const startedAt = new Date().toISOString();
+  const identitySync = importLegacyMyntStateFile(db, path.join(MISSION_CONTROL_STATE_DIR, "mynt-identities.json"), startedAt);
+  const associationSync = backfillAssertionAssociations(db, startedAt);
+  return {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    identitiesSynced: identitySync.identities,
+    aliasesInserted: identitySync.aliases,
+    scannedAssertions: associationSync.scannedAssertions,
+    inserted: associationSync.inserted,
+    deleted: associationSync.deleted,
   };
 }

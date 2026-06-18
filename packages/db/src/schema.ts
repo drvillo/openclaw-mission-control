@@ -58,6 +58,32 @@ export const runtimeTasks = sqliteTable("runtime_tasks", {
   rawJson: text("raw_json").notNull(),
 });
 
+export const runtimeInvocations = sqliteTable("runtime_invocations", {
+  id: text("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  agentId: text("agent_id").notNull(),
+  instruction: text("instruction").notNull(),
+  contextRefsJson: text("context_refs_json").notNull(),
+  mcObjectType: text("mc_object_type"),
+  mcObjectId: text("mc_object_id"),
+  obsidianTaskId: text("obsidian_task_id"),
+  detailsPath: text("details_path"),
+  model: text("model"),
+  thinking: text("thinking"),
+  timeoutSeconds: integer("timeout_seconds"),
+  metadataJson: text("metadata_json").notNull(),
+  status: text("status").notNull(),
+  sessionKey: text("session_key"),
+  runId: text("run_id"),
+  runtimeTaskId: text("runtime_task_id"),
+  error: text("error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  terminalAt: text("terminal_at"),
+});
+
 export const taskFlows = sqliteTable("task_flows", {
   flowId: text("flow_id").primaryKey(),
   syncMode: text("sync_mode"),
@@ -248,6 +274,7 @@ export const identities = sqliteTable("identities", {
   displayName: text("display_name").notNull(),
   primaryEmail: text("primary_email"),
   isSelf: integer("is_self", { mode: "boolean" }).notNull().default(false),
+  source: text("source").notNull().default("legacy"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -258,6 +285,17 @@ export const identityAliases = sqliteTable("identity_aliases", {
   aliasType: text("alias_type").notNull(),
   aliasValue: text("alias_value").notNull(),
   createdAt: text("created_at").notNull(),
+});
+
+export const myntArchivedItems = sqliteTable("mynt_archived_items", {
+  itemId: text("item_id").primaryKey(),
+  archivedAt: text("archived_at").notNull(),
+});
+
+export const myntSettings = sqliteTable("mynt_settings", {
+  settingKey: text("setting_key").primaryKey(),
+  settingValue: text("setting_value").notNull(),
+  updatedAt: text("updated_at").notNull(),
 });
 
 export const transcriptSegments = sqliteTable("transcript_segments", {
@@ -336,6 +374,18 @@ export const reviewEvents = sqliteTable("review_events", {
   reviewer: text("reviewer"),
   reviewedAt: text("reviewed_at").notNull(),
   note: text("note"),
+});
+
+export const assertionAssociations = sqliteTable("assertion_associations", {
+  assertionAssociationId: text("assertion_association_id").primaryKey(),
+  assertionKind: text("assertion_kind").notNull(),
+  assertionId: text("assertion_id").notNull(),
+  meetingId: text("meeting_id").notNull(),
+  documentVersionId: text("document_version_id").notNull(),
+  identityId: text("identity_id").notNull(),
+  source: text("source").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
 });
 
 export const meetingIngestionRuns = sqliteTable("meeting_ingestion_runs", {

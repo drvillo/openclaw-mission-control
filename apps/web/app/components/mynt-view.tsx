@@ -1,7 +1,9 @@
 "use client";
 
 import { Fragment, useMemo, useState } from "react";
-import { AssertionCard, type AssertionReviewOperation } from "./assertion-card";
+import { AccountabilityGraphView } from "./accountability-graph-view";
+import { type AssertionReviewOperation } from "./assertion-card";
+import { AssertionListLane } from "./assertion-list-lane";
 import { formatDisplayDate } from "../lib/date-format";
 import {
   meetingReviewPayloadItems,
@@ -20,6 +22,7 @@ type MyntViewProps = {
 
 type ActionResponse = { ok: true; summary: string; payload?: unknown } | { ok: false; error: string };
 type ReviewOperation = AssertionReviewOperation;
+type ViewMode = "list" | "graph";
 
 function pendingItems(items: MyntItem[]) {
   return items.filter((item) => item.reviewStatus === "needs_review");
@@ -75,52 +78,10 @@ function buildPeople(items: MyntItem[]) {
   );
 }
 
-function AccountabilityLane({
-  title,
-  description,
-  items,
-  pending,
-  onReview,
-  onReassign,
-  assigneeIdentities,
-}: {
-  title: string;
-  description: string;
-  items: MyntItem[];
-  pending: boolean;
-  onReview: (operation: ReviewOperation, item: MyntItem) => void;
-  onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
-  assigneeIdentities: MyntIndex["identities"];
-}) {
-  return (
-    <section className="mynt-lane">
-      <header className="mynt-lane-header">
-        <div>
-          <h4>{title}</h4>
-          <p>{description}</p>
-        </div>
-        <span className="mynt-lane-count">{items.length}</span>
-      </header>
-      <div className="mynt-lane-list">
-        {items.map((item) => (
-          <AssertionCard
-            key={item.id}
-            item={item}
-            pending={pending}
-            onReview={onReview}
-            onReassign={item.kind === "action" ? onReassign : undefined}
-            assigneeIdentities={assigneeIdentities}
-          />
-        ))}
-        {items.length === 0 ? <div className="mynt-lane-empty">No {title.toLowerCase()} for this person.</div> : null}
-      </div>
-    </section>
-  );
-}
-
 export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pendingReviewOnly = false }: MyntViewProps) {
   const [localItems, setLocalItems] = useState(index.items);
   const [expandedPersonId, setExpandedPersonId] = useState<string | null>(initialExpandedPersonId ?? null);
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -131,6 +92,13 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
       ? people.map(filterPersonToPending).filter((person): person is MyntPerson => Boolean(person))
       : people;
   }, [peopleWithSelf, pendingReviewOnly]);
+
+  function selectPerson(personId: string | null, options: { updateUrl?: boolean } = {}) {
+    setExpandedPersonId(personId);
+    if (options.updateUrl !== false) {
+      window.history.pushState(null, "", personId ? `/accountability/people/${encodeURIComponent(personId)}` : "/accountability/people");
+    }
+  }
 
   async function postJson(endpoint: string, body: Record<string, unknown>) {
     setPending(true);
@@ -208,6 +176,28 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
     }
   }
 
+  function markActionDone(item: MyntItem) {
+    if (!item.assertionId) {
+      setMessage("This action does not have a database assertion ID.");
+      return;
+    }
+    setPending(true);
+    setMessage(null);
+    void postMeetingReview({ operation: "mark_action_done", assertionId: item.assertionId })
+      .then((payload) => {
+        setLocalItems((current) =>
+          current.map((entry) =>
+            entry.kind === "action" && entry.assertionId === item.assertionId
+              ? { ...entry, reviewStatus: "accepted", status: "done" }
+              : entry,
+          ),
+        );
+        setMessage(payload.summary);
+      })
+      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
+      .finally(() => setPending(false));
+  }
+
   function archiveOlderThan30() {
     if (index.archivePreview.itemCount === 0) {
       setMessage("No Accountability Map items older than 30 days to archive.");
@@ -233,9 +223,33 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
           {formatDisplayDate(index.archivePreview.cutoffDate)}
         </span>
         {pendingReviewOnly ? <span className="muted">Pending review only</span> : null}
+        <div className="mynt-view-toggle" role="group" aria-label="Accountability view mode">
+          <button type="button" className={viewMode === "list" ? "mynt-view-toggle-active" : ""} onClick={() => setViewMode("list")} aria-pressed={viewMode === "list"}>
+            List
+          </button>
+          <button type="button" className={viewMode === "graph" ? "mynt-view-toggle-active" : ""} onClick={() => setViewMode("graph")} aria-pressed={viewMode === "graph"}>
+            Accountability Graph
+          </button>
+        </div>
       </div>
       {message ? <p className="action-message mynt-message">{message}</p> : null}
 
+      {viewMode === "graph" ? (
+        <AccountabilityGraphView
+          items={localItems.filter((item) => !item.archived && !item.person.isSelf)}
+          people={visiblePeople}
+          identities={index.identities}
+          pending={pending}
+          pendingReviewOnly={pendingReviewOnly}
+          selectedPersonId={expandedPersonId}
+          onClose={() => setViewMode("list")}
+          onSelectPerson={selectPerson}
+          onReview={reviewItem}
+          onReassign={reassignAction}
+          onMarkDone={markActionDone}
+          onAcceptPending={(items) => postReview("accept", meetingReviewPayloadItems(pendingItems(items)))}
+        />
+      ) : (
       <div className="table-shell mynt-people-list">
         <table>
           <thead>
@@ -253,11 +267,7 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
                 <Fragment key={person.id}>
                   <tr
                     className={`meeting-row ${expanded ? "meeting-row-active" : ""}`}
-                    onClick={() => {
-                      const next = expanded ? null : person.id;
-                      setExpandedPersonId(next);
-                      window.history.pushState(null, "", next ? `/accountability/people/${encodeURIComponent(next)}` : "/accountability/people");
-                    }}
+                    onClick={() => selectPerson(expanded ? null : person.id)}
                     aria-expanded={expanded}
                   >
                     <td>
@@ -285,18 +295,21 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
                           </button>
                         </div>
                         <div className="mynt-lanes" aria-label={`${person.displayName} accountability items`}>
-                          <AccountabilityLane
+                          <AssertionListLane
                             title="Actions"
                             description="Assigned follow-ups extracted from meeting notes."
+                            emptyText="No actions for this person."
                             items={person.actions}
                             pending={pending}
                             onReview={reviewItem}
                             onReassign={reassignAction}
+                            onMarkDone={markActionDone}
                             assigneeIdentities={index.identities}
                           />
-                          <AccountabilityLane
+                          <AssertionListLane
                             title="Decisions"
                             description="Owned decisions extracted from meeting notes."
+                            emptyText="No decisions for this person."
                             items={person.decisions}
                             pending={pending}
                             onReview={reviewItem}
@@ -318,6 +331,7 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

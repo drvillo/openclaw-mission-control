@@ -2,7 +2,7 @@ import { assert, test } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openMissionControlDb } from "@ocmc/db";
+import { openMissionControlDb, syncMyntIdentitiesToDb } from "@ocmc/db";
 import { ingestMeetingNoteFile } from "../../../worker/src/meetings-ingestion";
 import { loadMeetingDetailWithOptions, loadMeetingIndexFromMarkdownRoot, loadMeetingIndexWithOptions, parseMeetingReviewSections } from "./meetings";
 
@@ -90,6 +90,7 @@ Defer the launch
     evidence: "- [00:01:00] Bob: Before. > [00:01:05] Alice: I will follow up. - [00:01:08] Bob: Thanks.",
     evidenceTimestamps: ["00:01:00", "00:01:05", "00:01:08"],
     evidenceTargetTime: "00:01:05",
+        associations: [],
   });
   assert.equal(parsed.decisions[0].label, "D1");
   assert.equal(parsed.decisions[1].id, "decision-2");
@@ -258,8 +259,22 @@ test("loadMeetingIndexWithOptions uses db-backed metadata when parity passes in 
   const secondMeetingPath = writeMeeting(root, "2026-05-27-fathom-recording-149750630.md", "Weekly", "149750630", "2026-05-27");
   const dbPath = path.join(root, "mission-control.sqlite");
   const db = openMissionControlDb(dbPath);
-  ingestMeetingNoteFile(db, firstMeetingPath, { ingestedAt: "2026-05-31T00:00:00.000Z" });
-  ingestMeetingNoteFile(db, secondMeetingPath, { ingestedAt: "2026-05-31T00:01:00.000Z" });
+  syncMyntIdentitiesToDb(db, [
+    {
+      id: "alice@example.com",
+      email: "alice@example.com",
+      displayName: "Alice",
+      aliases: ["Alice"],
+    },
+    {
+      id: "bob@example.com",
+      email: "bob@example.com",
+      displayName: "Bob",
+      aliases: ["Bob"],
+    },
+  ]);
+  ingestMeetingNoteFile(db, firstMeetingPath, { ingestedAt: "2026-05-31T00:00:00.000Z", syncMyntIdentities: false });
+  ingestMeetingNoteFile(db, secondMeetingPath, { ingestedAt: "2026-05-31T00:01:00.000Z", syncMyntIdentities: false });
   db.prepare(`UPDATE action_assertions SET review_status = 'imported' WHERE meeting_id IS NOT NULL;`).run();
 
   const markdownIndex = loadMeetingIndexFromMarkdownRoot(root);
@@ -286,9 +301,15 @@ test("loadMeetingIndexWithOptions uses db-backed metadata when parity passes in 
   assert.equal(detail?.actions[0].taskId, "task-149750630");
   assert.match(detail?.actions[0].assertionId ?? "", /^action_assertion_/u);
   assert.equal(detail?.actions[0].reviewStatus, "needs_review");
+  assert.deepEqual(detail?.actions[0].associations, [
+    { identityId: "bob@example.com", displayName: "Bob", email: "bob@example.com" },
+  ]);
   assert.equal(detail?.decisions[0].detailsRef, "[[Tasks/Details/149750630#D1]]");
   assert.match(detail?.decisions[0].assertionId ?? "", /^decision_assertion_/u);
   assert.equal(detail?.decisions[0].reviewStatus, "needs_review");
+  assert.deepEqual(detail?.decisions[0].associations, [
+    { identityId: "alice@example.com", displayName: "Alice", email: "alice@example.com" },
+  ]);
   assert.equal(detail?.lines.length, 3);
   assert.equal(detail?.rawText, null);
 });

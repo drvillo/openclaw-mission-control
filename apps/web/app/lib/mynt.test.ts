@@ -74,6 +74,7 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
         evidence: null,
         evidenceTimestamps: [],
         evidenceTargetTime: "00:01:00",
+        associations: [{ identityId: "bob@example.com", displayName: "Bob Example", email: "bob@example.com" }],
       },
       {
         kind: "action",
@@ -94,6 +95,7 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
         evidence: null,
         evidenceTimestamps: [],
         evidenceTargetTime: null,
+        associations: [],
       },
     ],
     decisions: [
@@ -116,6 +118,7 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
         evidence: null,
         evidenceTimestamps: [],
         evidenceTargetTime: null,
+        associations: [],
       },
     ],
   });
@@ -128,6 +131,9 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
   assert.equal(mynt.people[0].decisionCount, 1);
   assert.equal(mynt.people[0].actions[0].assertionId, "assertion-action-1");
   assert.equal(mynt.people[0].actions[0].reviewStatus, "needs_review");
+  assert.deepEqual(mynt.people[0].actions[0].associations, [
+    { identityId: "bob@example.com", displayName: "Bob Example", email: "bob@example.com" },
+  ]);
   assert.equal(mynt.people[0].decisions[0].assertionId, "assertion-decision-1");
   assert.equal(mynt.hiddenSelfCount, 1);
 });
@@ -156,6 +162,7 @@ test("buildMyntIndexFromState excludes archived item ids", () => {
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
         ],
         decisions: [],
@@ -192,6 +199,7 @@ test("identity alias matching resolves unique full-name aliases only", () => {
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
         ],
         decisions: [],
@@ -229,6 +237,7 @@ test("buildMyntIndexFromState infers clear full-name identities without manual r
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
           {
             kind: "action",
@@ -249,6 +258,7 @@ test("buildMyntIndexFromState infers clear full-name identities without manual r
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
         ],
         decisions: [],
@@ -300,6 +310,7 @@ test("buildMyntIndexFromState keeps ambiguous single-token names for manual revi
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
         ],
         decisions: [],
@@ -348,6 +359,7 @@ test("previewMyntArchive counts older items and linked Fathom tasks", () => {
             evidence: null,
             evidenceTimestamps: [],
             evidenceTargetTime: null,
+        associations: [],
           },
         ],
         decisions: [],
