@@ -6,13 +6,16 @@ import { MeetingsIndex } from "./components/meetings-index";
 import { MyAccountabilityView } from "./components/my-accountability-view";
 import { MyntView } from "./components/mynt-view";
 import { CronRunsPanel, RuntimeTasksPanel, TaskFlowsPanel } from "./components/operations-panels";
+import { PrSwarmPanel } from "./components/pr-swarm-panel";
 import { RoutingPanel } from "./components/routing-panel";
 import { SelfEvolutionPanel } from "./components/self-evolution-panel";
+import { SemanticConceptsPanel } from "./components/semantic-concepts-panel";
 import { TasksBoard } from "./components/tasks-board";
 import { WorkspaceShell, type WorkspaceId } from "./components/workspace-shell";
 import { formatDisplayDate, formatDisplayDateTime } from "./lib/date-format";
-import { loadDashboardState } from "./lib/mission-control";
+import { buildOpsNextActionItems, loadDashboardState, type DashboardOpsNextAction } from "./lib/mission-control";
 import { loadMeetingIndex } from "./lib/meetings";
+import { loadPrSwarmState } from "./lib/pr-swarm";
 import { buildMyntIndex } from "./lib/mynt";
 import { groupAcceptedSelfAssignedActions, partitionSelfAssignedDecisions, pendingSelfAssignedActions, selfAssignedActions } from "./lib/my-accountability";
 import { loadObsidianTaskBoard } from "./lib/openclaw";
@@ -90,6 +93,55 @@ function Panel({
   );
 }
 
+function OpsNextActionCenterline({ items }: { items: DashboardOpsNextAction[] }) {
+  return (
+    <section className="ops-next-action-card" aria-labelledby="ops-next-action-title">
+      <div className="ops-next-action-head">
+        <div>
+          <p className="eyebrow">Next-action centerline</p>
+          <h2 id="ops-next-action-title">What needs attention first</h2>
+        </div>
+        <span className="ops-next-action-readonly">Read-only ranking</span>
+      </div>
+      <div className="ops-next-action-list">
+        {items.map((item, index) => (
+          <article className="ops-next-action-item" key={item.id}>
+            <div className="ops-next-action-rank">#{index + 1}</div>
+            <div className="ops-next-action-body">
+              <div className="ops-next-action-title-row">
+                <h3>{item.title}</h3>
+                <span className={`ops-next-action-priority ops-next-action-priority-${item.priority}`}>{item.priority}</span>
+              </div>
+              <p>{item.summary}</p>
+              <p className="ops-next-action-rationale">{item.rationale}</p>
+              <dl className="ops-next-action-meta">
+                <div>
+                  <dt>Owner</dt>
+                  <dd>{item.owner}</dd>
+                </div>
+                <div>
+                  <dt>Source</dt>
+                  <dd>{item.source}</dd>
+                </div>
+              </dl>
+              <ul className="ops-next-action-evidence">
+                {item.evidence.map((evidence) => (
+                  <li key={evidence}>{evidence}</li>
+                ))}
+              </ul>
+              {item.href ? (
+                <a className="metric-action" href={item.href}>
+                  Open evidence
+                </a>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export async function MissionControlPage({
   activeWorkspace = "work",
   selectedMeetingId,
@@ -127,12 +179,15 @@ export async function MissionControlPage({
   const activeMyntActions = myntIndex.items.filter((item) => item.kind === "action" && !item.archived);
   const activeMyntDecisions = myntIndex.items.filter((item) => item.kind === "decision" && !item.archived);
   const selfEvolution = state.selfEvolution;
-  const selfEvolutionCronJob =
-    state.cronJobs.find((job) => job.jobId === selfEvolution.activeCronId) ??
-    state.cronJobs.find((job) => job.name.toLowerCase().includes("supervised self-evolution"));
-  const selfEvolutionTaskLinks = Object.fromEntries(
-    selfEvolution.runs.flatMap((run) => (run.reviewTask?.id ? [[run.reviewTask.id, { href: buildSelfEvolutionDayHref(run.date), label: "Open improvement day" }]] : [])),
-  );
+  const opsNextActions = buildOpsNextActionItems(state);
+  const prSwarm = loadPrSwarmState();
+  const selfEvolutionCronJob = state.cronJobs.find((job) => job.jobId === selfEvolution.activeCronId);
+  const selfEvolutionTaskLinks = Object.fromEntries([
+    ...selfEvolution.runs.flatMap((run) => (run.reviewTask?.id ? [[run.reviewTask.id, { href: buildSelfEvolutionDayHref(run.date), label: "Open self-evolution run" }] as const] : [])),
+    ...selfEvolution.packets.flatMap((proposal) =>
+      proposal.runtimeInvocation?.obsidianTaskId ? [[proposal.runtimeInvocation.obsidianTaskId, { href: buildSelfEvolutionDayHref(proposal.date, proposal.id), label: "Open proposal" }] as const] : [],
+    ),
+  ]);
   const archivedMyntActions = myntIndex.items.filter((item) => item.kind === "action" && item.archived);
   const archivedMyntDecisions = myntIndex.items.filter((item) => item.kind === "decision" && item.archived);
   const pendingMyntActions = activeMyntActions.filter((item) => item.reviewStatus === "needs_review").length;
@@ -308,6 +363,22 @@ export async function MissionControlPage({
     </div>
   );
 
+  const semanticConceptsWorkspace = (
+    <div className="workspace-stack">
+      <section className="workspace-hero">
+        <div>
+          <p className="eyebrow">Accountability Semantics</p>
+          <h2>Semantic Concepts</h2>
+          <p className="intro">Operational semantic-layer status, proposal generation, and concept review controls for the Accountability Map.</p>
+        </div>
+      </section>
+
+      <Panel title="Operational Semantic Layer" copy="Generate and review semantic concept proposals without crowding the Accountability Map.">
+        <SemanticConceptsPanel />
+      </Panel>
+    </div>
+  );
+
   const identity = (
     <div className="workspace-stack">
       <section className="workspace-hero">
@@ -325,15 +396,15 @@ export async function MissionControlPage({
     <div className="workspace-stack">
       <section className="workspace-hero">
         <div>
-          <p className="eyebrow">Supervised System Evolution</p>
+          <p className="eyebrow">Manual Dual-Entity Evolution</p>
           <h2>Self-Evolution</h2>
-          <p className="intro">Daily analyzer proposals, review decisions, and implementation launches backed by Obsidian notes and the OpenClaw runtime path.</p>
+          <p className="intro">Manual generator proposals, implementer feedback, blocking answers, and TaskOps implementation triggers backed by Obsidian artifacts.</p>
         </div>
       </section>
 
       <Panel
-        title="Daily Improvements"
-        copy="Review proposed improvements, discard noise, or create/reuse an implementation task and launch the selected agent."
+        title="Manual Proposals"
+        copy="Review proposals and implementer feedback, record answers for blockers, then create/reuse a TaskOps implementation task and trigger the selected agent."
       >
         <SelfEvolutionPanel
           selfEvolution={selfEvolution}
@@ -381,6 +452,8 @@ export async function MissionControlPage({
         <MetricCard label="Audit" value={state.findings.length} caption="loaded findings" detail={`${state.memoryHealth.length} memory scopes`} />
       </section>
 
+      <OpsNextActionCenterline items={opsNextActions} />
+
       <Panel
         title="Agent Routing"
         copy="Request-level routing evidence from `main` session logs, including misroutes, recovery prompts, accepted spawns, direct execution fallback, and child completion state."
@@ -388,24 +461,22 @@ export async function MissionControlPage({
         <RoutingPanel groups={state.routingGroups} />
       </Panel>
 
-      <Panel title="Supervised Self-Evolution" copy="Compact status for the daily supervised review loop. Full review and actions live in the Self-Evolution workspace.">
+      <Panel title="Manual Self-Evolution" copy="Compact status for the manual dual-entity loop. Full review and actions live in the Self-Evolution workspace.">
         <section className="ops-grid">
           <div className="ops-field">
-            <span>Latest day</span>
-            <strong>{selfEvolution.latestDate ? formatDisplayDate(selfEvolution.latestDate) : "none"}</strong>
-            <small>{selfEvolution.latestGeneratedAt ? `Generated ${formatDateTime(selfEvolution.latestGeneratedAt)}` : "No daily note found yet."}</small>
+            <span>Latest run</span>
+            <strong>{selfEvolution.latestDate ?? "none"}</strong>
+            <small>{selfEvolution.latestGeneratedAt ? `Generated ${formatDateTime(selfEvolution.latestGeneratedAt)}` : "No manual run found yet."}</small>
           </div>
           <div className="ops-field">
             <span>Proposals</span>
             <strong>{selfEvolution.packetCount}</strong>
-            <small>{selfEvolution.reviewTaskId ? `Review task ${selfEvolution.reviewTaskId} · ${selfEvolution.reviewTaskStatus ?? "unknown"}` : "No active review task found."}</small>
+            <small>{selfEvolution.reviewTaskId ? `Task ${selfEvolution.reviewTaskId} · ${selfEvolution.reviewTaskStatus ?? "unknown"}` : "TaskOps implementation tasks are per proposal."}</small>
           </div>
           <div className="ops-field">
-            <span>Production cron</span>
-            <strong>{selfEvolutionCronJob?.lastRunStatus ?? "none"}</strong>
-            <small>
-              Last {formatDateTime(selfEvolutionCronJob?.lastRunAtMs ?? null)} · Next {formatDateTime(selfEvolutionCronJob?.nextRunAtMs ?? null)}
-            </small>
+            <span>Retired cron</span>
+            <strong>{selfEvolutionCronJob ? "still listed" : "retired"}</strong>
+            <small>{selfEvolutionCronJob ? `Last ${formatDateTime(selfEvolutionCronJob.lastRunAtMs)} · Next ${formatDateTime(selfEvolutionCronJob.nextRunAtMs)}` : "No scheduled self-evolution loop is active."}</small>
           </div>
         </section>
         <div className="action-row ops-action-row">
@@ -414,13 +485,13 @@ export async function MissionControlPage({
           </a>
           {selfEvolution.latestDate ? (
             <a className="metric-action" href={buildSelfEvolutionDayHref(selfEvolution.latestDate)}>
-              Open latest day
+              Open latest run
             </a>
           ) : null}
         </div>
       </Panel>
 
-      <Panel title="Cron Jobs" copy="Detailed cron definitions and schedule state. Self-evolution status above only keeps compact execution visibility.">
+      <Panel title="Cron Jobs" copy="Detailed cron definitions and schedule state. Manual self-evolution is intentionally not scheduled.">
         <div className="table-shell">
           <table>
             <thead>
@@ -605,6 +676,29 @@ export async function MissionControlPage({
     </div>
   );
 
+  const prSwarmWorkspace = (
+    <div className="workspace-stack">
+      <section className="workspace-hero workspace-hero-ops">
+        <div>
+          <p className="eyebrow">PR review automation</p>
+          <h2>PR Swarm</h2>
+          <p className="intro">Configured repositories, recent multi-agent review runs, publisher outcomes, and per-run fixability evidence.</p>
+        </div>
+      </section>
+
+      <section className="grid">
+        <MetricCard label="Configured repos" value={prSwarm.repos.length} caption="loaded from PR Swarm config" detail={prSwarm.configPath} />
+        <MetricCard label="Review runs" value={prSwarm.runs.length} caption="recorded PR Swarm runs" detail={`Artifacts: ${prSwarm.stateRoot}`} />
+        <MetricCard label="Latest publisher" value={prSwarm.runs[0]?.publisherStatus ?? "none"} caption="most recent run outcome" detail={prSwarm.runs[0] ? `${prSwarm.runs[0].repo}#${prSwarm.runs[0].prNumber}` : "No runs recorded"} />
+        <MetricCard label="Human review" value={prSwarm.runs.filter((run) => run.humanReviewRequired).length} caption="runs requiring human review" detail="from judge artifacts" />
+      </section>
+
+      <Panel title="Mission Control" copy="Read-only PR Swarm operations page. Expand a run to see its timeline, policy evidence, and fixability decisions without crowding the main runs list.">
+        <PrSwarmPanel state={prSwarm} />
+      </Panel>
+    </div>
+  );
+
   return (
     <main className="page-shell">
       <WorkspaceShell
@@ -613,8 +707,10 @@ export async function MissionControlPage({
         meetings={myMeetings}
         myAccountability={myAccountability}
         mynt={mynt}
+        semanticConcepts={semanticConceptsWorkspace}
         identity={identity}
         ops={fonkeyOps}
+        prSwarm={prSwarmWorkspace}
         selfEvolution={selfEvolutionWorkspace}
       />
     </main>

@@ -4,7 +4,16 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { AssertionCard, ReviewStatusBadge, type AssertionReviewOperation } from "./assertion-card";
 import { AssertionListLane } from "./assertion-list-lane";
 import { AccountabilityGraphCanvas, type GraphNodeScreenPosition } from "./accountability-graph-canvas";
-import { buildAccountabilityGraph, type AccountabilityGraph, type AccountabilityGraphLink, type AccountabilityGraphNode } from "../lib/accountability-graph";
+import { SearchControl } from "./search-control";
+import type { AssertionActionState } from "./use-assertion-actions";
+import {
+  buildAccountabilityGraph,
+  deriveAccountabilityConceptSummaries,
+  type AccountabilityConceptSummary,
+  type AccountabilityGraph,
+  type AccountabilityGraphLink,
+  type AccountabilityGraphNode,
+} from "../lib/accountability-graph";
 import { formatDisplayDate } from "../lib/date-format";
 import { normalizeMyAccountabilityActionStatus } from "../lib/my-accountability";
 import type { MyntIndex, MyntItem, MyntPerson } from "../lib/mynt";
@@ -16,21 +25,28 @@ type AccountabilityGraphViewProps = {
   pending: boolean;
   pendingReviewOnly: boolean;
   includeSelf?: boolean;
+  searchValue?: string;
+  searchResultSummary?: string;
   selectedPersonId: string | null;
+  onSearchChange?: (value: string) => void;
   onClose: () => void;
   onSelectPerson: (personId: string | null, options?: { updateUrl?: boolean }) => void;
   onReview: (operation: AssertionReviewOperation, item: MyntItem) => void;
   onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
   onMarkDone: (item: MyntItem) => void;
+  getActionState?: (item: MyntItem) => AssertionActionState;
   onAcceptPending?: (items: MyntItem[]) => void;
 };
 
-type GraphSelection = { type: "person"; personId: string } | { type: "assertion"; nodeId: string; itemId: string } | null;
+type GraphSelection = { type: "person"; personId: string } | { type: "assertion"; nodeId: string; itemId: string } | { type: "concept"; conceptId: string } | null;
 type GraphPersonTab = "actions" | "decisions";
+type GraphConceptMode = "landscape" | "attention";
 type GraphVisibility = {
   showActions: boolean;
   showDecisions: boolean;
   showDoneActions: boolean;
+  showConcepts: boolean;
+  showPersonLabels: boolean;
 };
 type GraphOverlayLayout =
   | { mode: "pending" }
@@ -45,6 +61,7 @@ type AssertionConnection = {
   person: Extract<AccountabilityGraphNode, { nodeType: "person" }>;
   link: AccountabilityGraphLink;
 };
+type ConceptOption = { conceptId: string; label: string; summary: string; status?: string };
 type SelectedGraphNodeOverlayProps = {
   selection: Exclude<GraphSelection, null>;
   layout: GraphOverlayLayout;
@@ -57,6 +74,9 @@ type SelectedGraphNodeOverlayProps = {
   selectedAssertionItem: MyntItem | null;
   selectedDecisions: MyntItem[];
   selectedPendingItems: MyntItem[];
+  selectedConceptSummary: AccountabilityConceptSummary | null;
+  conceptMode: GraphConceptMode;
+  activeConcepts: ConceptOption[];
   assertionConnectedPeople: AssertionConnection[];
   onClose: () => void;
   onAcceptPending?: (items: MyntItem[]) => void;
@@ -64,6 +84,8 @@ type SelectedGraphNodeOverlayProps = {
   onReview: (operation: AssertionReviewOperation, item: MyntItem) => void;
   onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
   onMarkDone: (item: MyntItem) => void;
+  getActionState?: (item: MyntItem) => AssertionActionState;
+  onConceptCuration: (operation: string, body: Record<string, unknown>) => void;
   onSelectConnectedPerson: (person: Extract<AccountabilityGraphNode, { nodeType: "person" }>) => void;
 };
 
@@ -162,7 +184,16 @@ function applyGraphVisibility(graph: AccountabilityGraph, items: MyntItem[], vis
     }
   }
 
-  const visibleNodeIds = new Set([...visibleAssertionIds, ...visiblePersonIds]);
+  const visibleConceptIds = new Set<string>();
+  if (visibility.showConcepts) {
+    for (const node of graph.nodes) {
+      if (node.nodeType === "assertion" && visibleAssertionIds.has(node.id) && node.concept?.id) {
+        visibleConceptIds.add(`concept:${node.concept.id}`);
+      }
+    }
+  }
+
+  const visibleNodeIds = new Set([...visibleAssertionIds, ...visiblePersonIds, ...visibleConceptIds]);
   const nodes = graph.nodes.filter((node) => visibleNodeIds.has(node.id));
   const links = graph.links.filter((link) => visibleNodeIds.has(endpointId(link.source)) && visibleNodeIds.has(endpointId(link.target)));
   const assertions = nodes.filter((node): node is Extract<AccountabilityGraphNode, { nodeType: "assertion" }> => node.nodeType === "assertion");
@@ -176,8 +207,19 @@ function applyGraphVisibility(graph: AccountabilityGraph, items: MyntItem[], vis
       actions: assertions.filter((node) => node.kind === "action").length,
       decisions: assertions.filter((node) => node.kind === "decision").length,
       pending: assertions.filter((node) => node.reviewStatus === "needs_review").length,
+      concepts: new Set(assertions.map((node) => node.concept?.id).filter(Boolean)).size,
     },
   };
+}
+
+function formatSemanticSource(value: string) {
+  if (value === "semantic_auto") return "semantic auto";
+  if (value === "manual") return "manual";
+  return value.replace(/_/gu, " ");
+}
+
+function formatConceptConfidence(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)}%` : "n/a";
 }
 
 function buildGraphOverlayLayout(
@@ -188,6 +230,9 @@ function buildGraphOverlayLayout(
   if (viewportWidth > 0 && viewportWidth < MOBILE_GRAPH_OVERLAY_BREAKPOINT) {
     return { mode: "sheet" };
   }
+  if (selection.type === "concept" && !anchor) {
+    return { mode: "sheet" };
+  }
   if (!anchor) {
     return { mode: "pending" };
   }
@@ -195,8 +240,8 @@ function buildGraphOverlayLayout(
     return { mode: "sheet" };
   }
 
-  const width = selection.type === "person" ? GRAPH_PERSON_OVERLAY_WIDTH : GRAPH_ASSERTION_OVERLAY_WIDTH;
-  const height = selection.type === "person" ? GRAPH_PERSON_OVERLAY_HEIGHT : GRAPH_ASSERTION_OVERLAY_HEIGHT;
+  const width = selection.type === "person" || selection.type === "concept" ? GRAPH_PERSON_OVERLAY_WIDTH : GRAPH_ASSERTION_OVERLAY_WIDTH;
+  const height = selection.type === "person" || selection.type === "concept" ? GRAPH_PERSON_OVERLAY_HEIGHT : GRAPH_ASSERTION_OVERLAY_HEIGHT;
   const availableWidth = anchor.viewportWidth - GRAPH_OVERLAY_PADDING * 2;
   const availableHeight = anchor.viewportHeight - GRAPH_OVERLAY_PADDING * 2;
 
@@ -227,6 +272,9 @@ function SelectedGraphNodeOverlay({
   selectedAssertionItem,
   selectedDecisions,
   selectedPendingItems,
+  selectedConceptSummary,
+  conceptMode,
+  activeConcepts,
   assertionConnectedPeople,
   onClose,
   onAcceptPending,
@@ -234,13 +282,16 @@ function SelectedGraphNodeOverlay({
   onReview,
   onReassign,
   onMarkDone,
+  getActionState,
+  onConceptCuration,
   onSelectConnectedPerson,
 }: SelectedGraphNodeOverlayProps) {
   const isPersonSelection = selection.type === "person";
+  const isConceptSelection = selection.type === "concept";
   const overlayClassName = [
     "accountability-graph-selection-overlay",
     layout.mode === "sheet" ? "accountability-graph-selection-sheet" : "accountability-graph-selection-anchored",
-    isPersonSelection ? "accountability-graph-selection-person" : "accountability-graph-selection-assertion",
+    isPersonSelection || isConceptSelection ? "accountability-graph-selection-person" : "accountability-graph-selection-assertion",
   ].join(" ");
   const overlayStyle: (CSSProperties & Record<"--graph-selection-width", string>) | undefined =
     layout.mode === "anchored"
@@ -255,7 +306,7 @@ function SelectedGraphNodeOverlay({
     <section className={overlayClassName} style={overlayStyle} aria-label="Selected graph details">
       <header className="accountability-graph-selection-header">
         <div className="accountability-graph-selection-heading">
-          <p className="eyebrow">{isPersonSelection ? "Person" : "Assertion"}</p>
+          <p className="eyebrow">{isConceptSelection ? `Concept · ${conceptMode === "attention" ? "Attention" : "Landscape"}` : isPersonSelection ? "Person" : "Assertion"}</p>
           <h4>{title}</h4>
           <p>{summary}</p>
         </div>
@@ -271,7 +322,136 @@ function SelectedGraphNodeOverlay({
         </div>
       </header>
 
-      {isPersonSelection ? (
+      {isConceptSelection && selectedConceptSummary ? (
+        <div className="accountability-graph-selection-body accountability-concept-overlay-body">
+          <section className="accountability-concept-detail-card">
+            <p>{selectedConceptSummary.summary || "No summary yet."}</p>
+            <div className="accountability-graph-stats accountability-concept-stats" aria-label="Concept summary">
+              <span>{pluralize(selectedConceptSummary.actionCount, "action")}</span>
+              <span>{pluralize(selectedConceptSummary.decisionCount, "decision")}</span>
+              <span>{pluralize(selectedConceptSummary.openActions, "open action")}</span>
+              <span>{pluralize(selectedConceptSummary.pendingReviewCount, "pending")}</span>
+              <span>{pluralize(selectedConceptSummary.fragmentedOwnerCount, "owner")}</span>
+            </div>
+            <div className="meeting-review-meta">
+              <span className="meeting-review-meta-item">
+                <span>Recent meetings</span>
+                <strong>{selectedConceptSummary.recentMeetings.slice(0, 3).map((meeting) => meeting.title).join(" · ") || "None"}</strong>
+              </span>
+              <span className="meeting-review-meta-item">
+                <span>Involved people</span>
+                <strong>{selectedConceptSummary.involvedPeople.slice(0, 6).join(" · ") || "None"}</strong>
+              </span>
+              <span className="meeting-review-meta-item">
+                <span>Source</span>
+                <strong>{selectedConceptSummary.assignmentSources.map(formatSemanticSource).join(" · ") || "n/a"}</strong>
+              </span>
+              <span className="meeting-review-meta-item">
+                <span>Confidence</span>
+                <strong>{formatConceptConfidence(selectedConceptSummary.averageConfidence)}</strong>
+              </span>
+            </div>
+          </section>
+
+          <section className="accountability-concept-curation" aria-label="Concept curation">
+            <h5>Curate concept</h5>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                onConceptCuration("rename", { conceptId: selectedConceptSummary.conceptId, label: String(form.get("label") || "") });
+              }}
+            >
+              <input name="label" defaultValue={selectedConceptSummary.label} aria-label="Concept label" />
+              <button type="submit" className="meeting-review-action-button" disabled={pending}>Rename</button>
+            </form>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                onConceptCuration("update_summary", { conceptId: selectedConceptSummary.conceptId, summary: String(form.get("summary") || "") });
+              }}
+            >
+              <textarea name="summary" defaultValue={selectedConceptSummary.summary} aria-label="Concept summary" rows={3} />
+              <button type="submit" className="meeting-review-action-button" disabled={pending}>Update summary</button>
+            </form>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                const targetConceptId = String(form.get("targetConceptId") || "");
+                if (targetConceptId && window.confirm("Merge this concept into the selected target?")) {
+                  onConceptCuration("merge", { fromConceptId: selectedConceptSummary.conceptId, toConceptId: targetConceptId });
+                }
+              }}
+            >
+              <select name="targetConceptId" defaultValue="" aria-label="Merge target concept">
+                <option value="">Merge into…</option>
+                {activeConcepts.filter((concept) => concept.conceptId !== selectedConceptSummary.conceptId).map((concept) => (
+                  <option key={concept.conceptId} value={concept.conceptId}>{concept.label}</option>
+                ))}
+              </select>
+              <button type="submit" className="meeting-review-action-button" disabled={pending}>Merge</button>
+            </form>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                const label = String(form.get("splitLabel") || "").trim();
+                const assertionIds = form.getAll("splitAssertionId").map(String).filter(Boolean);
+                if (label && assertionIds.length > 0) {
+                  onConceptCuration("split", {
+                    sourceConceptId: selectedConceptSummary.conceptId,
+                    concepts: [{ label, summary: String(form.get("splitSummary") || ""), assertionIds }],
+                  });
+                } else if (label) {
+                  window.alert("Select at least one assertion to move into the split concept.");
+                }
+              }}
+            >
+              <input name="splitLabel" aria-label="Split concept label" placeholder="New split label" />
+              <textarea name="splitSummary" aria-label="Split concept summary" placeholder="Optional split summary" rows={2} />
+              <fieldset className="accountability-concept-split-assertions">
+                <legend>Assertions to move</legend>
+                {selectedConceptSummary.assignedItems.map((item) => (
+                  item.assertionId ? (
+                    <label key={item.id}>
+                      <input type="checkbox" name="splitAssertionId" value={item.assertionId} />
+                      <span>{item.kind === "action" ? "Action" : "Decision"}: {item.summary}</span>
+                    </label>
+                  ) : null
+                ))}
+              </fieldset>
+              <button type="submit" className="meeting-review-action-button" disabled={pending}>Split</button>
+            </form>
+            <button
+              type="button"
+              className="meeting-review-action-button meeting-review-action-danger"
+              disabled={pending}
+              onClick={() => {
+                if (window.confirm("Discard this concept and remove it from active semantic groups?")) {
+                  onConceptCuration("discard", { conceptId: selectedConceptSummary.conceptId });
+                }
+              }}
+            >
+              Discard concept
+            </button>
+          </section>
+
+          <AssertionListLane
+            title="Representative assertions"
+            description="Visible actions and decisions assigned to this concept."
+            emptyText="No visible assertions for this concept."
+            items={selectedConceptSummary.representativeItems}
+            pending={pending}
+            assigneeIdentities={identities}
+            onReview={onReview}
+            onReassign={onReassign}
+            onMarkDone={onMarkDone}
+            getActionState={getActionState}
+          />
+        </div>
+      ) : isPersonSelection ? (
         <div className="accountability-graph-selection-body">
           <div className="my-accountability-tabs accountability-graph-node-tabs" role="tablist" aria-label={`${title} accountability sections`}>
             <button
@@ -308,6 +488,7 @@ function SelectedGraphNodeOverlay({
                 onReview={onReview}
                 onReassign={onReassign}
                 onMarkDone={onMarkDone}
+                getActionState={getActionState}
               />
             ) : (
               <AssertionListLane
@@ -318,6 +499,7 @@ function SelectedGraphNodeOverlay({
                 pending={pending}
                 assigneeIdentities={identities}
                 onReview={onReview}
+                getActionState={getActionState}
               />
             )}
           </div>
@@ -353,9 +535,36 @@ function SelectedGraphNodeOverlay({
                   </span>
                 ) : null}
               </div>
+              {selectedAssertionItem.assertionId ? (
+                <form
+                  className="accountability-concept-assignment-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const form = new FormData(event.currentTarget);
+                    const conceptId = String(form.get("conceptId") || "");
+                    onConceptCuration(conceptId ? "assign_assertion" : "clear_assertion", {
+                      conceptId,
+                      assertionKind: selectedAssertionItem.kind,
+                      assertionId: selectedAssertionItem.assertionId,
+                    });
+                  }}
+                >
+                  <label>
+                    <span className="ops-label">Concept</span>
+                    <select name="conceptId" defaultValue={selectedAssertionItem.concept?.status === "active" ? selectedAssertionItem.concept.id : ""}>
+                      <option value="">No concept</option>
+                      {activeConcepts.map((concept) => (
+                        <option key={concept.conceptId} value={concept.conceptId}>{concept.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="submit" className="meeting-review-action-button" disabled={pending}>Save concept</button>
+                </form>
+              ) : null}
               <AssertionCard
                 item={selectedAssertionItem}
                 pending={pending}
+                actionState={getActionState?.(selectedAssertionItem)}
                 onReview={onReview}
                 onReassign={onReassign}
                 onMarkDone={onMarkDone}
@@ -394,14 +603,17 @@ export function AccountabilityGraphView({
   people,
   identities,
   pending,
-  pendingReviewOnly,
   includeSelf = false,
+  searchValue,
+  searchResultSummary,
   selectedPersonId,
+  onSearchChange,
   onClose,
   onSelectPerson,
   onReview,
   onReassign,
   onMarkDone,
+  getActionState,
   onAcceptPending,
 }: AccountabilityGraphViewProps) {
   const [hoveredNode, setHoveredNode] = useState<AccountabilityGraphNode | null>(null);
@@ -413,9 +625,11 @@ export function AccountabilityGraphView({
   const [personTab, setPersonTab] = useState<GraphPersonTab>("actions");
   const [selectionAnchor, setSelectionAnchor] = useState<GraphNodeScreenPosition | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
-  const [visibility, setVisibility] = useState<GraphVisibility>({ showActions: true, showDecisions: true, showDoneActions: false });
+  const [visibility, setVisibility] = useState<GraphVisibility>({ showActions: true, showDecisions: true, showDoneActions: false, showConcepts: false, showPersonLabels: true });
+  const [conceptMode, setConceptMode] = useState<GraphConceptMode>("landscape");
+  const [availableConcepts, setAvailableConcepts] = useState<ConceptOption[]>([]);
 
-  const baseGraph = useMemo(() => buildAccountabilityGraph(items, { identities, includeSelf, pendingReviewOnly }), [identities, includeSelf, items, pendingReviewOnly]);
+  const baseGraph = useMemo(() => buildAccountabilityGraph(items, { identities, includeSelf, pendingReviewOnly: false }), [identities, includeSelf, items]);
   const graph = useMemo(() => applyGraphVisibility(baseGraph, items, visibility), [baseGraph, items, visibility]);
   const selectedAssertionNode = useMemo(
     () =>
@@ -438,6 +652,30 @@ export function AccountabilityGraphView({
     () => new Set(graph.nodes.filter((node): node is Extract<AccountabilityGraphNode, { nodeType: "assertion" }> => node.nodeType === "assertion").map((node) => node.itemId)),
     [graph.nodes],
   );
+  const conceptSummaries = useMemo(() => deriveAccountabilityConceptSummaries(items, visibleItemIds), [items, visibleItemIds]);
+  const conceptOptions = useMemo(() => {
+    const options = new Map<string, ConceptOption>();
+    for (const concept of availableConcepts) {
+      options.set(concept.conceptId, concept);
+    }
+    for (const concept of conceptSummaries) {
+      options.set(concept.conceptId, { conceptId: concept.conceptId, label: concept.label, summary: concept.summary, status: "active" });
+    }
+    return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
+  }, [availableConcepts, conceptSummaries]);
+  const rankedConceptSummaries = useMemo(
+    () =>
+      [...conceptSummaries].sort((left, right) =>
+        conceptMode === "attention"
+          ? right.attentionRank - left.attentionRank || right.landscapeRank - left.landscapeRank || left.label.localeCompare(right.label)
+          : right.landscapeRank - left.landscapeRank || left.label.localeCompare(right.label),
+      ),
+    [conceptMode, conceptSummaries],
+  );
+  const selectedConceptSummary = useMemo(
+    () => (selection?.type === "concept" ? conceptSummaries.find((concept) => concept.conceptId === selection.conceptId) ?? null : null),
+    [conceptSummaries, selection],
+  );
   const selectedRelatedItems = useMemo(() => {
     if (!activePersonId) {
       return [];
@@ -446,14 +684,18 @@ export function AccountabilityGraphView({
   }, [activePersonId, identities, items, visibleItemIds]);
   const selectedActions = selectedRelatedItems.filter((item) => item.kind === "action");
   const selectedDecisions = selectedRelatedItems.filter((item) => item.kind === "decision");
-  const selectedNodeId = selection?.type === "person" ? `person:${selection.personId}` : selection?.nodeId ?? null;
+  const selectedNodeId = selection?.type === "person" ? `person:${selection.personId}` : selection?.type === "assertion" ? selection.nodeId : selection?.type === "concept" ? `concept:${selection.conceptId}` : null;
   const selectedDisplayName =
     selection?.type === "assertion"
       ? selectedAssertionItem?.summary ?? selectedAssertionNode?.summary ?? "Assertion"
+      : selection?.type === "concept"
+        ? selectedConceptSummary?.label ?? "Concept"
       : selectedPerson?.displayName ?? selectedGraphPerson?.displayName ?? "No person selected";
   const selectedOverlaySummary =
     selection?.type === "assertion" && selectedAssertionItem
       ? `${selectedAssertionItem.kind === "action" ? "Action" : "Decision"} · ${selectedAssertionItem.person.displayName} · ${formatDisplayDate(selectedAssertionItem.meetingDate)}`
+      : selection?.type === "concept" && selectedConceptSummary
+        ? `${pluralize(selectedConceptSummary.actionCount, "action")} · ${pluralize(selectedConceptSummary.decisionCount, "decision")} · ${pluralize(selectedConceptSummary.pendingReviewCount, "pending item")}`
       : selectedSummary(selectedPerson, selectedRelatedItems);
   const hasSelection = Boolean(selection);
   const selectedPendingItems = pendingReviewItems([...selectedActions, ...selectedDecisions]);
@@ -493,7 +735,10 @@ export function AccountabilityGraphView({
       setSelection(null);
       onSelectPerson(null, { updateUrl: false });
     }
-  }, [graph.nodes, onSelectPerson, selection]);
+    if (selection?.type === "concept" && !conceptSummaries.some((concept) => concept.conceptId === selection.conceptId)) {
+      setSelection(null);
+    }
+  }, [conceptSummaries, graph.nodes, onSelectPerson, selection]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -511,17 +756,48 @@ export function AccountabilityGraphView({
   }, []);
 
   useEffect(() => {
+    if (visibility.showPersonLabels && hoveredNode?.nodeType === "person") {
+      setHoveredNode(null);
+    }
+  }, [hoveredNode, visibility.showPersonLabels]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/accountability/concepts")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { concepts?: ConceptOption[] } | null) => {
+        if (!cancelled && payload?.concepts) {
+          setAvailableConcepts(payload.concepts.filter((concept) => concept.status === "active"));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAvailableConcepts([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     function onWindowKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") {
         return;
       }
       event.preventDefault();
+      if (selection) {
+        setSelectionAnchor(null);
+        setSelection(null);
+        onSelectPerson(null);
+        return;
+      }
       onClose();
     }
 
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
-  }, [onClose]);
+  }, [onClose, onSelectPerson, selection]);
 
   function selectGraphNode(node: AccountabilityGraphNode, anchor: GraphNodeScreenPosition | null = null) {
     setSelectionAnchor(anchor);
@@ -530,7 +806,18 @@ export function AccountabilityGraphView({
       onSelectPerson(node.personId);
       return;
     }
+    if (node.nodeType === "concept") {
+      setSelection({ type: "concept", conceptId: node.conceptId });
+      onSelectPerson(null);
+      return;
+    }
     setSelection({ type: "assertion", nodeId: node.id, itemId: node.itemId });
+  }
+
+  function selectConcept(conceptId: string) {
+    setSelectionAnchor(null);
+    setSelection({ type: "concept", conceptId });
+    onSelectPerson(null);
   }
 
   function clearSelection() {
@@ -539,13 +826,36 @@ export function AccountabilityGraphView({
     onSelectPerson(null);
   }
 
+  function onGraphNodeHover(node: AccountabilityGraphNode | null) {
+    setHoveredNode(visibility.showPersonLabels && node?.nodeType === "person" ? null : node);
+  }
+
   function toggleVisibility(key: keyof GraphVisibility) {
     setVisibility((current) => ({ ...current, [key]: !current[key] }));
+  }
+
+  async function postConceptCuration(operation: string, body: Record<string, unknown>) {
+    try {
+      const response = await fetch("/api/accountability/concepts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, ...body }),
+      });
+      const payload = (await response.json()) as { ok?: boolean; error?: string };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? `HTTP ${response.status}`);
+      }
+      window.location.reload();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    }
   }
 
   const hoverCopy = hoveredNode
     ? hoveredNode.nodeType === "person"
       ? `${hoveredNode.displayName} · ${pluralize(hoveredNode.actionCount, "action")} · ${pluralize(hoveredNode.decisionCount, "decision")}`
+      : hoveredNode.nodeType === "concept"
+        ? `${hoveredNode.label} · ${pluralize(hoveredNode.assertionCount, "assertion")} · ${hoveredNode.assignmentSources.map(formatSemanticSource).join("/")}`
       : `${hoveredNode.kind === "action" ? "Action" : "Decision"}: ${hoveredNode.summary}`
     : "Drag to orbit, scroll to zoom, click a node to inspect.";
 
@@ -555,12 +865,14 @@ export function AccountabilityGraphView({
         <AccountabilityGraphCanvas
           graph={graph}
           selectedNodeId={selectedNodeId}
+          showConcepts={visibility.showConcepts}
+          showPersonLabels={visibility.showPersonLabels}
           resetSignal={resetSignal}
           unpinSelectedSignal={unpinSelectedSignal}
           unpinAllSignal={unpinAllSignal}
           onPinnedNodeIdsChange={setPinnedNodeIds}
           onNodeSelect={selectGraphNode}
-          onNodeHover={setHoveredNode}
+          onNodeHover={onGraphNodeHover}
           onBackgroundClick={clearSelection}
           onSelectionAnchorChange={setSelectionAnchor}
         />
@@ -586,11 +898,22 @@ export function AccountabilityGraphView({
             <p>{hoverCopy}</p>
           </div>
 
+          {onSearchChange ? (
+            <SearchControl
+              value={searchValue ?? ""}
+              onChange={onSearchChange}
+              placeholder="Search graph"
+              resultSummary={searchResultSummary}
+              className="accountability-graph-search"
+            />
+          ) : null}
+
           <div className="accountability-graph-stats" aria-label="Graph summary">
             <span>{pluralize(graph.stats.people, "person", "people")}</span>
             <span>{pluralize(graph.stats.actions, "action")}</span>
             <span>{pluralize(graph.stats.decisions, "decision")}</span>
             <span>{pluralize(graph.stats.pending, "pending")}</span>
+            <span>{pluralize(graph.stats.concepts, "concept")}</span>
           </div>
 
           <div className="accountability-graph-legend" aria-label="Graph legend">
@@ -606,7 +929,55 @@ export function AccountabilityGraphView({
               <input type="checkbox" checked={visibility.showDoneActions} onChange={() => toggleVisibility("showDoneActions")} />
               All actions
             </label>
+            <label className="accountability-graph-toggle">
+              <input type="checkbox" checked={visibility.showConcepts} onChange={() => toggleVisibility("showConcepts")} />
+              Semantic groups
+            </label>
+            <label className="accountability-graph-toggle">
+              <input type="checkbox" checked={visibility.showPersonLabels} onChange={() => toggleVisibility("showPersonLabels")} />
+              Names
+            </label>
           </div>
+          {visibility.showConcepts ? (
+            <div className="accountability-concept-panel" aria-label="Semantic groups panel">
+              <div className="accountability-concept-panel-head">
+                <strong>Semantic groups</strong>
+                <div className="mynt-view-toggle" role="group" aria-label="Concept mode">
+                  <button type="button" className={conceptMode === "landscape" ? "mynt-view-toggle-active" : ""} aria-pressed={conceptMode === "landscape"} onClick={() => setConceptMode("landscape")}>Landscape</button>
+                  <button type="button" className={conceptMode === "attention" ? "mynt-view-toggle-active" : ""} aria-pressed={conceptMode === "attention"} onClick={() => setConceptMode("attention")}>Attention</button>
+                </div>
+              </div>
+              <form
+                className="accountability-concept-create-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const form = new FormData(event.currentTarget);
+                  const label = String(form.get("label") || "").trim();
+                  if (label) {
+                    postConceptCuration("create", { label, summary: String(form.get("summary") || "") });
+                  }
+                }}
+              >
+                <input name="label" aria-label="New concept label" placeholder="New concept label" />
+                <input name="summary" aria-label="New concept summary" placeholder="Optional summary" />
+                <button type="submit" className="meeting-review-action-button" disabled={pending}>Create concept</button>
+              </form>
+              <div className="accountability-concept-region-list">
+                {rankedConceptSummaries.slice(0, 10).map((concept) => (
+                  <button
+                    type="button"
+                    key={concept.conceptId}
+                    className={`accountability-concept-region ${selection?.type === "concept" && selection.conceptId === concept.conceptId ? "accountability-concept-region-active" : ""}`}
+                    onClick={() => selectConcept(concept.conceptId)}
+                  >
+                    <strong>{concept.label}</strong>
+                    <span>{conceptMode === "attention" ? `${concept.openActions} open · ${concept.pendingReviewCount} pending · ${formatSemanticSource(concept.primarySource)}` : `${concept.assertionCount} assertions · ${concept.recentMeetings.length} meetings · ${formatConceptConfidence(concept.averageConfidence)}`}</span>
+                  </button>
+                ))}
+                {rankedConceptSummaries.length === 0 ? <span className="muted">No assigned concepts in this view.</span> : null}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {hasSelection && selection && overlayLayout && overlayLayout.mode !== "pending" ? (
@@ -622,6 +993,9 @@ export function AccountabilityGraphView({
             selectedAssertionItem={selectedAssertionItem}
             selectedDecisions={selectedDecisions}
             selectedPendingItems={selectedPendingItems}
+            selectedConceptSummary={selectedConceptSummary}
+            conceptMode={conceptMode}
+            activeConcepts={conceptOptions}
             assertionConnectedPeople={assertionConnectedPeople}
             onClose={clearSelection}
             onAcceptPending={onAcceptPending}
@@ -629,6 +1003,8 @@ export function AccountabilityGraphView({
             onReview={onReview}
             onReassign={onReassign}
             onMarkDone={onMarkDone}
+            getActionState={getActionState}
+            onConceptCuration={postConceptCuration}
             onSelectConnectedPerson={(person) => selectGraphNode(person)}
           />
         ) : null}

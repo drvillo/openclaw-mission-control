@@ -98,6 +98,7 @@ function index(): MyntIndex {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("MyAccountabilityView", () => {
@@ -142,5 +143,18 @@ describe("MyAccountabilityView", () => {
     expect(screen.queryByRole("button", { name: "Reassign" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Mark as done" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Action status")).not.toBeInTheDocument();
+  });
+
+  test("search filters visible action lanes and preserves the existing tab layout", () => {
+    render(<MyAccountabilityView index={index()} />);
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "next" } });
+
+    expect(screen.getByRole("tab", { name: /Actions1/u })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Review inbox" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Next" })).toBeInTheDocument();
+    expect(screen.getByText("Accepted next action")).toBeInTheDocument();
+    expect(screen.queryByText("Review the launch action")).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?q=next");
   });
 });

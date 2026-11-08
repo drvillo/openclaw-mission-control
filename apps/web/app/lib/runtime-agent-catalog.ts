@@ -5,14 +5,20 @@ export type RuntimeAgentOption = {
   searchText: string;
 };
 
-export const DEFAULT_PACKET_AGENT_ID = "coding-agent";
-export const DEFAULT_PACKET_AGENT_REASON = "coding-agent because this packet requires code changes, tests, and implementation follow-through.";
+export const DEFAULT_PACKET_AGENT_ID = "self-evolution-implementer";
+export const DEFAULT_PACKET_AGENT_REASON = "self-evolution-implementer because manual dual-entity proposals should be implemented through the dedicated implementer agent while preserving TaskOps evolve-point tracking.";
 
 export const PACKET_RUNTIME_AGENT_OPTIONS: RuntimeAgentOption[] = [
   {
+    id: "self-evolution-implementer",
+    label: "self-evolution-implementer",
+    description: "Default implementer for manual dual-entity self-evolution proposals.",
+    searchText: "self-evolution implementer manual dual-entity proposal TaskOps",
+  },
+  {
     id: "coding-agent",
     label: "coding-agent",
-    description: "Default implementation orchestrator for code-change packets.",
+    description: "Use when a proposal is explicitly assigned to the coding-agent SDLC path.",
     searchText: "coding-agent implementation code tests default orchestrator",
   },
   {

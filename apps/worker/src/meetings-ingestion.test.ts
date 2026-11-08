@@ -6,11 +6,16 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   acceptMeetingAssertions,
+  autoApplySafeSemanticConceptProposals,
   approveMyntAliasInDb,
   backfillAssertionAssociations,
   countRows,
   importLegacyMyntStateFile,
+  importSemanticConceptProposalRun,
   isActionWorkflowStatus,
+  listSemanticRefreshRuns,
+  listAccountabilityConcepts,
+  loadAccountabilityConceptMetadataForAssertions,
   loadMyntStateFromDb,
   markActionAssertionDone,
   openMissionControlDb,
@@ -745,6 +750,193 @@ test("handleIngestMeetingsRequest maps success, auth, missing, and invalid paths
     { dbPath, vaultRoot: vault, allowedRoot: fathomRoot },
   );
   assert.equal(invalid.status, 400);
+});
+
+test("handleIngestMeetingsRequest triggers semantic refresh after successful ingestion via injectable hook", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-semantic-success-"));
+  const vault = path.join(root, "vault");
+  const fathomRoot = path.join(vault, "Meeting Recordings", "Fathom");
+  mkdirSync(fathomRoot, { recursive: true });
+  writeFileSync(path.join(fathomRoot, "2026-05-26-fathom-recording-149332762.md"), SAMPLE_MEETING, "utf8");
+  const dbPath = path.join(root, "mission-control.sqlite");
+  let hookCalls = 0;
+
+  const response = await handleIngestMeetingsRequest(
+    { sourcePath: "Meeting Recordings/Fathom/2026-05-26-fathom-recording-149332762.md" },
+    {},
+    {
+      dbPath,
+      vaultRoot: vault,
+      allowedRoot: fathomRoot,
+      ingestedAt: "2026-05-31T00:00:00.000Z",
+      semanticRefreshEnabled: true,
+      semanticRefresh: ({ result, semanticRefreshRunId }) => {
+        hookCalls += 1;
+        assert.equal(result.status, "ingested");
+        assert.ok(result.sourceDocumentId);
+        assert.ok(result.documentVersionId);
+        assert.ok(result.ingestionRunId);
+        assert.ok(semanticRefreshRunId.startsWith("semantic_refresh_run_"));
+        return {
+          indexVersionId: "index:fake",
+          proposalRunId: "proposal-run:fake",
+          proposalsImported: 2,
+          autoApplied: 1,
+          pending: 1,
+          autoApply: { considered: 2, applied: 1, pending: 1, skipped: 1, appliedProposalIds: ["proposal:fake"] },
+        };
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.payload?.semanticRefresh && (response.body.payload.semanticRefresh as { status?: string }).status, "completed");
+  assert.equal(hookCalls, 1);
+  const db = openMissionControlDb(dbPath);
+  try {
+    const [run] = listSemanticRefreshRuns(db);
+    assert.equal(run.status, "completed");
+    assert.equal(run.trigger, "meeting_ingestion_api");
+    assert.equal(run.indexVersionId, "index:fake");
+    assert.equal(run.proposalRunId, "proposal-run:fake");
+    assert.equal(run.proposalsImported, 2);
+    assert.equal(run.autoApplied, 1);
+    assert.equal(run.pending, 1);
+    const [ingestionRun] = db.prepare(`
+      SELECT semantic_status as semanticStatus,
+             semantic_message as semanticMessage,
+             semantic_proposal_run_id as semanticProposalRunId,
+             semantic_auto_applied_count as semanticAutoAppliedCount
+      FROM meeting_ingestion_runs;
+    `).all() as Array<{ semanticStatus: string | null; semanticMessage: string | null; semanticProposalRunId: string | null; semanticAutoAppliedCount: number | null }>;
+    assert.equal(ingestionRun.semanticStatus, "succeeded");
+    assert.match(ingestionRun.semanticMessage ?? "", /semantic refresh completed/u);
+    assert.equal(ingestionRun.semanticProposalRunId, "proposal-run:fake");
+    assert.equal(ingestionRun.semanticAutoAppliedCount, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test("meeting ingestion semantic refresh can auto-create Mission Control concepts for graph visibility", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-semantic-auto-concept-"));
+  const vault = path.join(root, "vault");
+  const fathomRoot = path.join(vault, "Meeting Recordings", "Fathom");
+  mkdirSync(fathomRoot, { recursive: true });
+  writeFileSync(path.join(fathomRoot, "2026-05-26-fathom-recording-149332762.md"), SAMPLE_MEETING, "utf8");
+  const dbPath = path.join(root, "mission-control.sqlite");
+
+  const response = await handleIngestMeetingsRequest(
+    { sourcePath: "Meeting Recordings/Fathom/2026-05-26-fathom-recording-149332762.md" },
+    {},
+    {
+      dbPath,
+      vaultRoot: vault,
+      allowedRoot: fathomRoot,
+      ingestedAt: "2026-05-31T00:00:00.000Z",
+      semanticRefreshEnabled: true,
+      semanticRefresh: ({ db }) => {
+        const actionRow = db.prepare(`SELECT action_assertion_id as assertionId FROM action_assertions WHERE external_assertion_id = ? LIMIT 1;`).get("action-c34a23e62e77ea2b") as { assertionId?: string } | undefined;
+        const decisionRow = db.prepare(`SELECT decision_assertion_id as assertionId FROM decision_assertions WHERE external_assertion_id = ? LIMIT 1;`).get("decision-a549e0def36710cb") as { assertionId?: string } | undefined;
+        assert.ok(actionRow?.assertionId);
+        assert.ok(decisionRow?.assertionId);
+        importSemanticConceptProposalRun(db, {
+          proposalRunId: "proposal-run:auto-visible",
+          sourceWindow: { meetingIds: ["recording:149332762"] },
+          indexVersion: "index:fake",
+          registrySnapshotVersion: "registry:fake",
+          promptVersion: { promptId: "semantic-concept-synthesis", version: "test", contractVersion: "semantic-contracts/v1" },
+          generatedAt: "2026-05-31T00:00:00.000Z",
+          evidencePackets: [],
+          diagnostics: [],
+          proposals: [{
+            proposalId: "proposal:auto-visible",
+            proposalRunId: "proposal-run:auto-visible",
+            canonicalLabelSuggestion: "BTSF Loan Follow-up",
+            definition: "Follow-up around the BTSF loan decision and related actions.",
+            whyItMatters: "Keeps cross-meeting accountability visible.",
+            scope: "operational_process",
+            confidence: 0.96,
+            registryAction: "propose_new",
+            aliasesSuggested: ["BTSF follow-up"],
+            linkedActionIds: [actionRow.assertionId],
+            linkedDecisionIds: [decisionRow.assertionId],
+            linkedEvidenceWindowIds: ["evidence:auto-visible"],
+          }],
+        });
+        const autoApply = autoApplySafeSemanticConceptProposals(db, { proposalRunId: "proposal-run:auto-visible" }, "2026-05-31T00:01:00.000Z");
+        return {
+          indexVersionId: "index:fake",
+          proposalRunId: "proposal-run:auto-visible",
+          proposalsImported: 1,
+          autoApplied: autoApply.applied,
+          pending: autoApply.pending,
+          autoApply,
+        };
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.payload?.semanticRefresh && (response.body.payload.semanticRefresh as { status?: string }).status, "completed");
+  const db = openMissionControlDb(dbPath);
+  try {
+    const concepts = listAccountabilityConcepts(db, ["active"]);
+    assert.equal(concepts.length, 1);
+    assert.equal(concepts[0].label, "BTSF Loan Follow-up");
+    const metadata = loadAccountabilityConceptMetadataForAssertions(db);
+    const actionRow = db.prepare(`SELECT action_assertion_id as assertionId FROM action_assertions WHERE external_assertion_id = ? LIMIT 1;`).get("action-c34a23e62e77ea2b") as { assertionId?: string } | undefined;
+    const decisionRow = db.prepare(`SELECT decision_assertion_id as assertionId FROM decision_assertions WHERE external_assertion_id = ? LIMIT 1;`).get("decision-a549e0def36710cb") as { assertionId?: string } | undefined;
+    assert.ok(actionRow?.assertionId);
+    assert.ok(decisionRow?.assertionId);
+    assert.equal(metadata.get(`action:${actionRow.assertionId}`)?.assignmentSource, "semantic_auto");
+    assert.equal(metadata.get(`decision:${decisionRow.assertionId}`)?.label, "BTSF Loan Follow-up");
+    assert.equal(metadata.get(`decision:${decisionRow.assertionId}`)?.confidence, 0.96);
+  } finally {
+    db.close();
+  }
+});
+
+test("semantic refresh failure is isolated from successful meeting ingestion and recorded", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-meeting-semantic-failure-"));
+  const vault = path.join(root, "vault");
+  const fathomRoot = path.join(vault, "Meeting Recordings", "Fathom");
+  mkdirSync(fathomRoot, { recursive: true });
+  writeFileSync(path.join(fathomRoot, "2026-05-26-fathom-recording-149332762.md"), SAMPLE_MEETING, "utf8");
+  const dbPath = path.join(root, "mission-control.sqlite");
+
+  const response = await handleIngestMeetingsRequest(
+    { sourcePath: "Meeting Recordings/Fathom/2026-05-26-fathom-recording-149332762.md" },
+    {},
+    {
+      dbPath,
+      vaultRoot: vault,
+      allowedRoot: fathomRoot,
+      ingestedAt: "2026-05-31T00:00:00.000Z",
+      semanticRefreshEnabled: true,
+      semanticRefresh: () => {
+        throw new Error("semantic provider unavailable");
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.payload?.status, "ingested");
+  assert.equal(response.body.payload?.semanticRefresh && (response.body.payload.semanticRefresh as { status?: string }).status, "failed");
+  const db = openMissionControlDb(dbPath);
+  try {
+    assert.equal(countRows(db, "source_documents"), 1);
+    const [run] = listSemanticRefreshRuns(db);
+    assert.equal(run.status, "failed");
+    assert.match(run.error ?? "", /semantic provider unavailable/u);
+    const [ingestionRun] = db.prepare(`SELECT semantic_status as semanticStatus, semantic_message as semanticMessage FROM meeting_ingestion_runs;`).all() as Array<{ semanticStatus: string | null; semanticMessage: string | null }>;
+    assert.equal(ingestionRun.semanticStatus, "failed");
+    assert.match(ingestionRun.semanticMessage ?? "", /semantic provider unavailable/u);
+  } finally {
+    db.close();
+  }
 });
 
 function writeMeeting(root: string, fileName: string, title: string, recordingId: string) {

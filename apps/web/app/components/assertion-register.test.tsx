@@ -80,6 +80,7 @@ function index(): MyntIndex {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("AssertionRegister action completion", () => {
@@ -88,6 +89,61 @@ describe("AssertionRegister action completion", () => {
 
     expect(screen.getAllByRole("button", { name: "Mark as done" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Mark selected done" })).toBeDisabled();
+  });
+
+  test("action rows render concept metadata without changing row controls", () => {
+    const next = index();
+    next.items[0] = item({
+      id: "pending-action",
+      kind: "action",
+      reviewStatus: "needs_review",
+      summary: "Review launch",
+      concept: { id: "concept-launch", label: "Launch readiness", summary: "Launch follow-up", status: "active", assignmentSource: "manual", confidence: null },
+    });
+
+    render(<AssertionRegister index={next} kind="action" statusFilter="all" />);
+
+    expect(screen.getByText("Concept · Launch readiness")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Mark as done" })).toHaveLength(2);
+  });
+
+  test("accepting a pending row keeps it visible as accepted without reloading", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, summary: "Accepted 1 item." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AssertionRegister index={index()} kind="action" statusFilter="pending" />);
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      operation: "accept",
+      items: [{ kind: "action", assertionId: "assertion-pending-action" }],
+    });
+    expect(screen.getByText("Review launch")).toBeInTheDocument();
+    expect(screen.getAllByText("Accepted").some((element) => element.classList.contains("meeting-review-status-accepted"))).toBe(true);
+    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+  });
+
+  test("rejecting a pending row removes only that row locally", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, summary: "Rejected 1 item." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const next = index();
+    next.items.push(item({ id: "second-action", kind: "action", reviewStatus: "needs_review", summary: "Keep second action" }));
+
+    render(<AssertionRegister index={next} kind="action" statusFilter="pending" />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject" })[0]);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText("Review launch")).not.toBeInTheDocument());
+    expect(screen.getByText("Keep second action")).toBeInTheDocument();
   });
 
   test("selected action rows post mark_action_done", async () => {
@@ -116,5 +172,17 @@ describe("AssertionRegister action completion", () => {
 
     expect(screen.queryByRole("button", { name: "Mark selected done" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Mark as done" })).not.toBeInTheDocument();
+  });
+
+  test("search narrows rows after kind and status filters", () => {
+    render(<AssertionRegister index={index()} kind="action" statusFilter="all" />);
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "follow-up" } });
+
+    expect(screen.getByText("Prepare follow-up")).toBeInTheDocument();
+    expect(screen.queryByText("Review launch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Finished launch")).not.toBeInTheDocument();
+    expect(screen.getByText("0 selected of 1 actions")).toBeInTheDocument();
+    expect(window.location.search).toBe("?q=follow-up");
   });
 });

@@ -1,5 +1,5 @@
 import { assert, test } from "vitest";
-import { buildAccountabilityGraph } from "./accountability-graph";
+import { buildAccountabilityGraph, deriveAccountabilityConceptSummaries } from "./accountability-graph";
 import type { MyntIndex, MyntItem, MyntPersonRef } from "./mynt";
 
 function person(partial: Partial<MyntPersonRef> = {}): MyntPersonRef {
@@ -86,6 +86,7 @@ test("buildAccountabilityGraph creates person, assertion, participant, and owner
   assert.equal(graph.stats.actions, 1);
   assert.equal(graph.stats.decisions, 1);
   assert.equal(graph.stats.pending, 1);
+  assert.equal(graph.stats.concepts, 0);
   assert.ok(graph.nodes.some((node) => node.id === "person:identity:alice@example.com"));
   assert.ok(graph.nodes.some((node) => node.id === "person:identity:bob@example.com"));
   assert.ok(!graph.nodes.some((node) => node.id === "person:identity:francesco@lunarrails.io"));
@@ -93,6 +94,64 @@ test("buildAccountabilityGraph creates person, assertion, participant, and owner
   assert.ok(graph.links.some((link) => link.type === "owns_decision"));
   assert.ok(graph.links.some((link) => link.type === "participant_context"));
   assert.ok(graph.links.some((link) => link.type === "same_meeting"));
+});
+
+test("buildAccountabilityGraph exposes concept metadata on assigned assertions", () => {
+  const graph = buildAccountabilityGraph(
+    [
+      item({
+        id: "action-1",
+        kind: "action",
+        summary: "Send launch notes",
+        concept: { id: "concept-launch", label: "Launch readiness", summary: "Launch follow-up", status: "active", assignmentSource: "manual", confidence: null },
+      }),
+    ],
+    { identities },
+  );
+
+  const assertion = graph.nodes.find((node) => node.nodeType === "assertion");
+  assert.equal(assertion?.nodeType === "assertion" ? assertion.concept?.label : null, "Launch readiness");
+  assert.ok(graph.nodes.some((node) => node.nodeType === "concept" && node.label === "Launch readiness"));
+  assert.ok(graph.links.some((link) => link.type === "semantic_group" && link.label === "Semantic group"));
+  assert.equal(graph.stats.concepts, 1);
+});
+
+test("buildAccountabilityGraph creates semantic group nodes with source and confidence stats", () => {
+  const concept = { id: "concept-autopilot", label: "Semantic autopilot", summary: "Autopilot follow-up", status: "active" as const, assignmentSource: "semantic_auto" as const, confidence: 0.92 };
+  const graph = buildAccountabilityGraph(
+    [
+      item({ id: "action-1", kind: "action", summary: "Tune autopilot", concept }),
+      item({ id: "decision-1", kind: "decision", summary: "Use autopilot", concept, reviewStatus: "accepted", meetingId: "meeting-2", meetingTitle: "Autopilot Review", meetingDate: "2026-06-07" }),
+    ],
+    { identities },
+  );
+
+  const group = graph.nodes.find((node) => node.nodeType === "concept" && node.conceptId === "concept-autopilot");
+  if (!group || group.nodeType !== "concept") throw new Error("expected semantic concept node");
+  assert.equal(group.assertionCount, 2);
+  assert.deepEqual(group.assignmentSources, ["semantic_auto"]);
+  assert.equal(group.averageConfidence, 0.92);
+  assert.equal(graph.links.filter((link) => link.type === "semantic_group").length, 2);
+});
+
+test("deriveAccountabilityConceptSummaries keeps landscape and attention over the same concept IDs", () => {
+  const concept = { id: "concept-agency", label: "Investigation agency", summary: "Agency follow-up", status: "active" as const, assignmentSource: "auto" as const, confidence: 0.8 };
+  const items = [
+    item({ id: "agency-action", kind: "action", summary: "Coordinate agency", concept, status: "todo" }),
+    item({ id: "agency-decision", kind: "decision", summary: "Pick agency", concept, reviewStatus: "accepted", meetingId: "meeting-2", meetingTitle: "Follow-up", meetingDate: "2026-06-08" }),
+  ];
+
+  const summaries = deriveAccountabilityConceptSummaries(items);
+  assert.deepEqual(summaries.map((summary) => summary.conceptId), ["concept-agency"]);
+  assert.equal(summaries[0].actionCount, 1);
+  assert.equal(summaries[0].decisionCount, 1);
+  assert.equal(summaries[0].pendingReviewCount, 1);
+  assert.equal(summaries[0].assignedItems.length, 2);
+  assert.equal(summaries[0].representativeItems.length, 2);
+  assert.equal(summaries[0].recentMeetings.length, 2);
+  assert.deepEqual(summaries[0].assignmentSources, ["auto"]);
+  assert.equal(summaries[0].primarySource, "auto");
+  assert.equal(summaries[0].averageConfidence, 0.8);
 });
 
 test("buildAccountabilityGraph excludes archived, self-owned, and accepted items when requested", () => {

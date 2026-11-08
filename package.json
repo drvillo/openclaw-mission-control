@@ -3,13 +3,13 @@
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "scripts": {
-    "dev:web": "pnpm --filter @ocmc/web dev",
-    "dev:worker": "pnpm --filter @ocmc/worker dev",
+    "dev:web": "scripts/with-env.sh pnpm --filter @ocmc/web dev",
+    "dev:worker": "scripts/with-env.sh pnpm --filter @ocmc/worker dev",
     "deploy:web": "scripts/deploy-web.sh",
-    "start:web": "pnpm --filter @ocmc/web start:local",
-    "run:worker": "pnpm --filter @ocmc/worker start",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "ci": "pnpm typecheck && pnpm build"
+    "start:web": "scripts/with-env.sh pnpm --filter @ocmc/web start:local",
+    "run:worker": "scripts/with-env.sh pnpm --filter @ocmc/worker start",
+    "build": "scripts/with-env.sh pnpm -r build",
+    "typecheck": "scripts/with-env.sh pnpm -r typecheck",
+    "ci": "scripts/with-env.sh pnpm typecheck && scripts/with-env.sh pnpm build"
   }
 }

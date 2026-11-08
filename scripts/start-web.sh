@@ -7,6 +7,7 @@ cd "$ROOT"
 source "$ROOT/scripts/load-env.sh"
 
 export OPENCLAW_HOME="${OPENCLAW_HOME:-/Users/fonkey-oc/.openclaw}"
+export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$OPENCLAW_HOME}"
 export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-/Users/fonkey-oc/obsidian-fhq-data}"
 export MISSION_CONTROL_STATE_DIR="${MISSION_CONTROL_STATE_DIR:-/Users/fonkey-oc/.openclaw/mission-control-state}"
 export TASK_BOARD_INBOX="${TASK_BOARD_INBOX:-$OBSIDIAN_VAULT/Tasks/Task Inbox.md}"

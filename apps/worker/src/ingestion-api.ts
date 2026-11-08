@@ -1,12 +1,14 @@
 import { openMissionControlDb } from "@ocmc/db";
-import { DATABASE_PATH, MISSION_CONTROL_INGEST_TOKEN } from "./config";
-import { ingestMeetingNotePath, type IngestMeetingNotePathOptions } from "./meetings-ingestion";
+import { DATABASE_PATH, MISSION_CONTROL_INGEST_TOKEN, MISSION_CONTROL_SEMANTIC_CONCEPTS } from "./config";
+import { ingestMeetingNotePath, runPostMeetingIngestionSemanticRefresh, type IngestMeetingNotePathOptions, type MeetingIngestionSemanticRefreshFn } from "./meetings-ingestion";
 
 type HeaderReader = Pick<Headers, "get"> | Record<string, string | string[] | undefined>;
 
 type IngestMeetingsRequestOptions = IngestMeetingNotePathOptions & {
   dbPath?: string;
   token?: string;
+  semanticRefreshEnabled?: boolean;
+  semanticRefresh?: MeetingIngestionSemanticRefreshFn | null;
 };
 
 export type IngestMeetingsApiResult = {
@@ -80,6 +82,16 @@ export async function handleIngestMeetingsRequest(
       };
     }
 
+    const semanticRefresh = await runPostMeetingIngestionSemanticRefresh(db, result, {
+      enabled: options.semanticRefreshEnabled ?? MISSION_CONTROL_SEMANTIC_CONCEPTS,
+      refresh: options.semanticRefresh,
+      trigger: "meeting_ingestion_api",
+      source: result.canonicalSourcePath ?? (body as { sourcePath: string }).sourcePath,
+    });
+    if (semanticRefresh) {
+      result.semanticRefresh = semanticRefresh;
+    }
+
     return {
       status: 200,
       body: {
@@ -95,6 +107,7 @@ export async function handleIngestMeetingsRequest(
           transcriptSegmentCount: result.transcriptSegmentCount,
           actionCount: result.actionCount,
           decisionCount: result.decisionCount,
+          semanticRefresh: result.semanticRefresh,
         },
       },
     };

@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const webhookEvents = sqliteTable("webhook_events", {
   eventId: text("event_id").primaryKey(),
@@ -163,6 +163,48 @@ export const cronRuns = sqliteTable("cron_runs", {
   nextRunAtMs: integer("next_run_at_ms"),
   model: text("model"),
   provider: text("provider"),
+  recordedAt: text("recorded_at").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const prSwarmRuns = sqliteTable("pr_swarm_runs", {
+  runId: text("run_id").primaryKey(),
+  repo: text("repo").notNull(),
+  prNumber: integer("pr_number").notNull(),
+  headSha: text("head_sha").notNull(),
+  status: text("status").notNull(),
+  source: text("source").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  artifactsDir: text("artifacts_dir").notNull(),
+  recordedAt: text("recorded_at").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const prSwarmBridgeEvents = sqliteTable("pr_swarm_bridge_events", {
+  eventId: text("event_id").primaryKey(),
+  repo: text("repo").notNull(),
+  prNumber: integer("pr_number"),
+  headSha: text("head_sha"),
+  action: text("action"),
+  status: text("status").notNull(),
+  dedupeKey: text("dedupe_key"),
+  githubRunId: text("github_run_id"),
+  githubRunAttempt: text("github_run_attempt"),
+  failureReason: text("failure_reason"),
+  recordedAt: text("recorded_at").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const prSwarmFixAttempts = sqliteTable("pr_swarm_fix_attempts", {
+  attemptId: text("attempt_id").primaryKey(),
+  runId: text("run_id").notNull(),
+  repo: text("repo").notNull(),
+  prNumber: integer("pr_number").notNull(),
+  baseHeadSha: text("base_head_sha").notNull(),
+  mode: text("mode").notNull(),
+  status: text("status").notNull(),
+  patchArtifactPath: text("patch_artifact_path"),
+  rereviewRunId: text("rereview_run_id"),
   recordedAt: text("recorded_at").notNull(),
   rawJson: text("raw_json").notNull(),
 });
@@ -388,6 +430,35 @@ export const assertionAssociations = sqliteTable("assertion_associations", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const accountabilityConcepts = sqliteTable("accountability_concepts", {
+  conceptId: text("concept_id").primaryKey(),
+  label: text("label").notNull(),
+  summary: text("summary").notNull().default(""),
+  status: text("status").notNull(),
+  mergedIntoConceptId: text("merged_into_concept_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const accountabilityConceptAssignments = sqliteTable("accountability_concept_assignments", {
+  assignmentId: text("assignment_id").primaryKey(),
+  conceptId: text("concept_id").notNull(),
+  assertionKind: text("assertion_kind").notNull(),
+  assertionId: text("assertion_id").notNull(),
+  source: text("source").notNull(),
+  confidence: real("confidence"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const accountabilityConceptEvents = sqliteTable("accountability_concept_events", {
+  conceptEventId: text("concept_event_id").primaryKey(),
+  conceptId: text("concept_id").notNull(),
+  eventType: text("event_type").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const meetingIngestionRuns = sqliteTable("meeting_ingestion_runs", {
   ingestionRunId: text("ingestion_run_id").primaryKey(),
   sourceDocumentId: text("source_document_id"),
@@ -397,6 +468,82 @@ export const meetingIngestionRuns = sqliteTable("meeting_ingestion_runs", {
   message: text("message"),
   documentVersionId: text("document_version_id"),
   extractionRunId: text("extraction_run_id"),
+  semanticStatus: text("semantic_status"),
+  semanticMessage: text("semantic_message"),
+  semanticProposalRunId: text("semantic_proposal_run_id"),
+  semanticAutoAppliedCount: integer("semantic_auto_applied_count"),
+  semanticFinishedAt: text("semantic_finished_at"),
   startedAt: text("started_at").notNull(),
   finishedAt: text("finished_at"),
+});
+
+export const semanticRefreshRuns = sqliteTable("semantic_refresh_runs", {
+  semanticRefreshRunId: text("semantic_refresh_run_id").primaryKey(),
+  status: text("status").notNull(),
+  trigger: text("trigger").notNull(),
+  source: text("source"),
+  sourceDocumentId: text("source_document_id"),
+  documentVersionId: text("document_version_id"),
+  ingestionRunId: text("ingestion_run_id"),
+  indexVersionId: text("index_version_id"),
+  proposalRunId: text("proposal_run_id"),
+  proposalsImported: integer("proposals_imported").notNull().default(0),
+  autoApplied: integer("auto_applied").notNull().default(0),
+  pending: integer("pending").notNull().default(0),
+  error: text("error"),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+});
+
+export const semanticConceptProposalRuns = sqliteTable("semantic_concept_proposal_runs", {
+  proposalRunId: text("proposal_run_id").primaryKey(),
+  sourceWindowJson: text("source_window_json").notNull(),
+  indexVersion: text("index_version").notNull(),
+  registrySnapshotVersion: text("registry_snapshot_version").notNull(),
+  promptVersionJson: text("prompt_version_json").notNull(),
+  generatedAt: text("generated_at").notNull(),
+  importedAt: text("imported_at").notNull(),
+  diagnosticsJson: text("diagnostics_json").notNull(),
+  rawJson: text("raw_json").notNull(),
+});
+
+export const semanticConceptProposals = sqliteTable("semantic_concept_proposals", {
+  proposalId: text("proposal_id").primaryKey(),
+  proposalRunId: text("proposal_run_id").notNull(),
+  canonicalLabelSuggestion: text("canonical_label_suggestion").notNull(),
+  definition: text("definition").notNull(),
+  whyItMatters: text("why_it_matters").notNull(),
+  scope: text("scope").notNull(),
+  confidence: real("confidence").notNull(),
+  registryAction: text("registry_action").notNull(),
+  existingConceptId: text("existing_concept_id"),
+  aliasesSuggestedJson: text("aliases_suggested_json").notNull(),
+  linkedActionIdsJson: text("linked_action_ids_json").notNull(),
+  linkedDecisionIdsJson: text("linked_decision_ids_json").notNull(),
+  linkedEvidenceWindowIdsJson: text("linked_evidence_window_ids_json").notNull(),
+  reviewStatus: text("review_status").notNull().default("pending"),
+  targetConceptId: text("target_concept_id"),
+  rawJson: text("raw_json").notNull(),
+  importedAt: text("imported_at").notNull(),
+  reviewedAt: text("reviewed_at"),
+});
+
+export const semanticConceptProposalReviews = sqliteTable("semantic_concept_proposal_reviews", {
+  reviewId: text("review_id").primaryKey(),
+  proposalId: text("proposal_id").notNull(),
+  decision: text("decision").notNull(),
+  targetConceptId: text("target_concept_id"),
+  reviewer: text("reviewer"),
+  reasonsJson: text("reasons_json").notNull(),
+  aliasesAcceptedJson: text("aliases_accepted_json").notNull(),
+  reviewedAt: text("reviewed_at").notNull(),
+});
+
+export const semanticConceptSuppressions = sqliteTable("semantic_concept_suppressions", {
+  suppressionId: text("suppression_id").primaryKey(),
+  normalizedLabel: text("normalized_label").notNull(),
+  proposalId: text("proposal_id"),
+  reason: text("reason"),
+  reviewer: text("reviewer"),
+  createdAt: text("created_at").notNull(),
 });

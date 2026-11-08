@@ -31,11 +31,34 @@ export type AccountabilityGraphAssertionNode = {
   meetingTitle: string;
   meetingDate: string;
   ownerPersonId: string;
+  concept?: {
+    id: string;
+    label: string;
+    summary?: string | null;
+    assignmentSource?: string;
+    confidence?: number | null;
+  } | null;
 };
 
-export type AccountabilityGraphNode = AccountabilityGraphPersonNode | AccountabilityGraphAssertionNode;
+export type AccountabilityGraphConceptNode = {
+  id: string;
+  nodeType: "concept";
+  label: string;
+  conceptId: string;
+  summary: string;
+  assertionCount: number;
+  actionCount: number;
+  decisionCount: number;
+  pendingReviewCount: number;
+  people: string[];
+  recentMeetings: Array<{ meetingId: string; title: string; date: string }>;
+  assignmentSources: string[];
+  averageConfidence: number | null;
+};
 
-export type AccountabilityGraphLinkType = "assigned_action" | "owns_decision" | "associated_identity" | "participant_context" | "same_meeting";
+export type AccountabilityGraphNode = AccountabilityGraphPersonNode | AccountabilityGraphAssertionNode | AccountabilityGraphConceptNode;
+
+export type AccountabilityGraphLinkType = "assigned_action" | "owns_decision" | "associated_identity" | "participant_context" | "same_meeting" | "semantic_group";
 
 export type AccountabilityGraphLink = {
   id: string;
@@ -58,7 +81,29 @@ export type AccountabilityGraph = {
     actions: number;
     decisions: number;
     pending: number;
+    concepts: number;
   };
+};
+
+export type AccountabilityConceptSummary = {
+  conceptId: string;
+  label: string;
+  summary: string;
+  actionCount: number;
+  decisionCount: number;
+  assertionCount: number;
+  involvedPeople: string[];
+  recentMeetings: Array<{ meetingId: string; title: string; date: string }>;
+  openActions: number;
+  pendingReviewCount: number;
+  assignedItems: MyntItem[];
+  representativeItems: MyntItem[];
+  fragmentedOwnerCount: number;
+  landscapeRank: number;
+  attentionRank: number;
+  assignmentSources: string[];
+  primarySource: string;
+  averageConfidence: number | null;
 };
 
 type GraphIdentity = Pick<MyntIdentity, "id" | "email" | "displayName" | "aliases" | "isSelf">;
@@ -87,6 +132,10 @@ function personNodeId(personId: string) {
 
 function assertionNodeId(item: MyntItem) {
   return `assertion:${item.assertionId || item.id}`;
+}
+
+function conceptNodeId(conceptId: string) {
+  return `concept:${conceptId}`;
 }
 
 function identityPersonId(identityId: string) {
@@ -239,6 +288,7 @@ export function buildAccountabilityGraph(items: MyntItem[], options: BuildAccoun
   const nodes = new Map<string, AccountabilityGraphNode>();
   const links = new Map<string, AccountabilityGraphLink>();
   const assertionNodesByMeeting = new Map<string, AccountabilityGraphAssertionNode[]>();
+  const conceptItems = new Map<string, MyntItem[]>();
   const visibleItems = items.filter((item) => shouldIncludeItem(item, options));
   const identities = options.identities;
 
@@ -258,9 +308,13 @@ export function buildAccountabilityGraph(items: MyntItem[], options: BuildAccoun
       meetingTitle: item.meetingTitle,
       meetingDate: item.meetingDate,
       ownerPersonId: item.person.id,
+      concept: item.concept && item.concept.status === "active" ? { id: item.concept.id, label: item.concept.label, summary: item.concept.summary, assignmentSource: item.concept.assignmentSource, confidence: item.concept.confidence } : null,
     };
     nodes.set(assertion.id, assertion);
     assertionNodesByMeeting.set(item.meetingId, [...(assertionNodesByMeeting.get(item.meetingId) || []), assertion]);
+    if (assertion.concept) {
+      conceptItems.set(assertion.concept.id, [...(conceptItems.get(assertion.concept.id) ?? []), item]);
+    }
 
     upsertLink(
       links,
@@ -304,9 +358,46 @@ export function buildAccountabilityGraph(items: MyntItem[], options: BuildAccoun
     }
   }
 
+  for (const [conceptId, groupedItems] of conceptItems.entries()) {
+    const firstConcept = groupedItems.find((item) => item.concept)?.concept!;
+    const people = new Set<string>();
+    const meetings = new Map<string, { meetingId: string; title: string; date: string }>();
+    const confidences: number[] = [];
+    for (const item of groupedItems) {
+      people.add(item.person.displayName);
+      for (const association of item.associations) people.add(association.displayName);
+      for (const participant of item.meetingParticipants) people.add(participant);
+      meetings.set(item.meetingId, { meetingId: item.meetingId, title: item.meetingTitle, date: item.meetingDate });
+      if (typeof item.concept?.confidence === "number" && Number.isFinite(item.concept.confidence)) confidences.push(item.concept.confidence);
+    }
+    const conceptNode: AccountabilityGraphConceptNode = {
+      id: conceptNodeId(conceptId),
+      nodeType: "concept",
+      label: firstConcept.label,
+      conceptId,
+      summary: firstConcept.summary,
+      assertionCount: groupedItems.length,
+      actionCount: groupedItems.filter((item) => item.kind === "action").length,
+      decisionCount: groupedItems.filter((item) => item.kind === "decision").length,
+      pendingReviewCount: groupedItems.filter((item) => item.reviewStatus === "needs_review").length,
+      people: [...people].sort((left, right) => left.localeCompare(right)),
+      recentMeetings: [...meetings.values()].sort((left, right) => right.date.localeCompare(left.date) || left.title.localeCompare(right.title)).slice(0, 5),
+      assignmentSources: unique(groupedItems.map((item) => item.concept?.assignmentSource ?? "auto")),
+      averageConfidence: confidences.length ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length : null,
+    };
+    nodes.set(conceptNode.id, conceptNode);
+    for (const item of groupedItems) {
+      const assertion = nodes.get(assertionNodeId(item));
+      if (assertion?.nodeType === "assertion") {
+        upsertLink(links, conceptNode.id, assertion.id, "semantic_group", "Semantic group", item);
+      }
+    }
+  }
+
   const graphNodes = [...nodes.values()].sort((left, right) => {
     if (left.nodeType !== right.nodeType) {
-      return left.nodeType === "person" ? -1 : 1;
+      const order = { person: 0, concept: 1, assertion: 2 } satisfies Record<AccountabilityGraphNode["nodeType"], number>;
+      return order[left.nodeType] - order[right.nodeType];
     }
     return left.label.localeCompare(right.label);
   });
@@ -322,6 +413,72 @@ export function buildAccountabilityGraph(items: MyntItem[], options: BuildAccoun
       actions: assertions.filter((node) => node.kind === "action").length,
       decisions: assertions.filter((node) => node.kind === "decision").length,
       pending: assertions.filter((node) => node.reviewStatus === "needs_review").length,
+      concepts: graphNodes.filter((node) => node.nodeType === "concept").length,
     },
   };
+}
+
+function normalizeActionStatus(status: string | null) {
+  const normalized = status?.trim().toLowerCase().replace(/\s+/gu, "_") ?? "";
+  return normalized || "todo";
+}
+
+export function deriveAccountabilityConceptSummaries(items: MyntItem[], visibleItemIds?: Set<string>): AccountabilityConceptSummary[] {
+  const visibleItems = items.filter((item) => !visibleItemIds || visibleItemIds.has(item.id));
+  const grouped = new Map<string, MyntItem[]>();
+  for (const item of visibleItems) {
+    if (!item.concept || item.concept.status !== "active") {
+      continue;
+    }
+    grouped.set(item.concept.id, [...(grouped.get(item.concept.id) ?? []), item]);
+  }
+  return [...grouped.entries()]
+    .map(([conceptId, conceptItems]) => {
+      const firstConcept = conceptItems.find((item) => item.concept)?.concept!;
+      const people = new Set<string>();
+      const owners = new Set<string>();
+      const meetings = new Map<string, { meetingId: string; title: string; date: string }>();
+      const confidences: number[] = [];
+      for (const item of conceptItems) {
+        people.add(item.person.displayName);
+        owners.add(item.person.id);
+        for (const association of item.associations) {
+          people.add(association.displayName);
+        }
+        for (const participant of item.meetingParticipants) {
+          people.add(participant);
+        }
+        meetings.set(item.meetingId, { meetingId: item.meetingId, title: item.meetingTitle, date: item.meetingDate });
+        if (typeof item.concept?.confidence === "number" && Number.isFinite(item.concept.confidence)) confidences.push(item.concept.confidence);
+      }
+      const recentMeetings = [...meetings.values()].sort((left, right) => right.date.localeCompare(left.date) || left.title.localeCompare(right.title));
+      const actionCount = conceptItems.filter((item) => item.kind === "action").length;
+      const decisionCount = conceptItems.filter((item) => item.kind === "decision").length;
+      const openActions = conceptItems.filter((item) => item.kind === "action" && normalizeActionStatus(item.status) !== "done").length;
+      const pendingReviewCount = conceptItems.filter((item) => item.reviewStatus === "needs_review").length;
+      const fragmentedOwnerCount = owners.size;
+      const assignmentSources = unique(conceptItems.map((item) => item.concept?.assignmentSource ?? "auto"));
+      const sortedConceptItems = [...conceptItems].sort((left, right) => right.meetingDate.localeCompare(left.meetingDate) || left.summary.localeCompare(right.summary));
+      return {
+        conceptId,
+        label: firstConcept.label,
+        summary: firstConcept.summary,
+        actionCount,
+        decisionCount,
+        assertionCount: conceptItems.length,
+        involvedPeople: [...people].sort((left, right) => left.localeCompare(right)),
+        recentMeetings,
+        openActions,
+        pendingReviewCount,
+        assignedItems: sortedConceptItems,
+        representativeItems: sortedConceptItems.slice(0, 6),
+        fragmentedOwnerCount,
+        landscapeRank: recentMeetings.length * 4 + conceptItems.length * 2,
+        attentionRank: openActions * 4 + pendingReviewCount * 3 + Math.max(0, fragmentedOwnerCount - 1) * 2,
+        assignmentSources,
+        primarySource: assignmentSources.includes("semantic_auto") ? "semantic_auto" : assignmentSources.includes("manual") ? "manual" : assignmentSources[0] ?? "auto",
+        averageConfidence: confidences.length ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length : null,
+      } satisfies AccountabilityConceptSummary;
+    })
+    .sort((left, right) => right.landscapeRank - left.landscapeRank || left.label.localeCompare(right.label));
 }

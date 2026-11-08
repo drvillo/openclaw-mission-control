@@ -147,7 +147,13 @@ async function cliAgentRunner(input: RuntimeInvocationInput) {
   return await execFileAsync(OPENCLAW_BIN, args, {
     cwd: OPENCLAW_HOME,
     maxBuffer: 1024 * 1024 * 10,
-    env: { ...process.env, PATH: `/Users/fonkey-oc/.nvm/versions/node/v22.22.1/bin:${process.env.PATH ?? ""}` },
+    env: {
+      ...process.env,
+      OPENCLAW_HOME,
+      OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR ?? OPENCLAW_HOME,
+      HOME: process.env.HOME ?? "/Users/fonkey-oc",
+      PATH: `/Users/fonkey-oc/.nvm/versions/node/v22.22.1/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`,
+    },
   });
 }
 

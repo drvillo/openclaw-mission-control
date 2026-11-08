@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { assert, test } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";

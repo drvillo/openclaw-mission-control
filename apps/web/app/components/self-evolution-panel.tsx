@@ -4,7 +4,6 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { formatDisplayDayDate, formatDisplayDateTime } from "../lib/date-format";
 import { DEFAULT_PACKET_AGENT_ID, PACKET_RUNTIME_AGENT_OPTIONS, packetRuntimeAgentReason } from "../lib/runtime-agent-catalog";
 import { buildSelfEvolutionDayHref, buildWorkTaskHref, isPacketId, isTaskId } from "../lib/self-evolution-links";
-import { ActionButton } from "./action-button";
 import { StatusBadge } from "./assertion-card";
 import { CompactSelect } from "./compact-select";
 import { ObsidianMarkdown, type ObsidianDocumentReference } from "./obsidian-markdown";
@@ -53,6 +52,22 @@ type SelfEvolutionPacket = {
   canonicalKey: string;
   approvalClassification: string | null;
   approvalClass: string | null;
+  approvalBoundary?: string | null;
+  approvalRequired?: boolean;
+  userValue?: string | null;
+  capabilityHypothesis?: string | null;
+  firstMinimumValuableVersion?: string | null;
+  validationSignal?: string | null;
+  riskOfNotBuilding?: string | null;
+  decision?: string | null;
+  decisionRationale?: string | null;
+  evidenceQuality?: string | null;
+  generatorFeedback?: string | null;
+  questionAnswer?: string | null;
+  durableRule?: string | null;
+  answeredAt?: string | null;
+  manualRunJsonPath?: string | null;
+  implementerReportPath?: string | null;
   evidence: string[];
   rollback: string | null;
   validation: string[];
@@ -123,27 +138,19 @@ function isPacketDone(packet: SelfEvolutionPacket) {
   return packet.status?.trim().toLowerCase() === "done";
 }
 
-function isLegacyReviewPacket(packet: SelfEvolutionPacket) {
-  return packet.id.startsWith("SE-REVIEW-");
-}
-
 function hasActiveRuntimeInvocation(packet: SelfEvolutionPacket) {
   return Boolean(packet.runtimeInvocation && packet.runtimeInvocation.status !== "failed");
 }
 
 function canTriggerPacketImplementation(packet: SelfEvolutionPacket) {
   const normalizedStatus = packet.status?.trim().toLowerCase() ?? "";
-  return !isLegacyReviewPacket(packet) && !packet.attic && !isPacketDone(packet) && normalizedStatus !== "discarded" && !hasActiveRuntimeInvocation(packet);
-}
-
-function canDiscardPacket(packet: SelfEvolutionPacket) {
-  const normalizedStatus = packet.status?.trim().toLowerCase() ?? "";
-  return !isLegacyReviewPacket(packet) && !packet.attic && !isPacketDone(packet) && normalizedStatus !== "discarded";
+  const questionResolved = !packet.approvalRequired || Boolean(packet.questionAnswer?.trim());
+  return !packet.attic && !isPacketDone(packet) && normalizedStatus !== "discarded" && questionResolved && !hasActiveRuntimeInvocation(packet);
 }
 
 function isActiveReviewItem(packet: SelfEvolutionPacket) {
   const normalizedStatus = packet.status?.trim().toLowerCase() ?? "";
-  return !isLegacyReviewPacket(packet) && !packet.attic && normalizedStatus !== "discarded" && normalizedStatus !== "done";
+  return !packet.attic && normalizedStatus !== "discarded" && normalizedStatus !== "done";
 }
 
 function packetStatusLabel(status: string | null) {
@@ -157,6 +164,12 @@ function packetStatusLabel(status: string | null) {
   if (normalized === "discarded") {
     return "Discarded";
   }
+  if (normalized === "blocked") {
+    return "Blocked";
+  }
+  if (normalized === "answered") {
+    return "Answered";
+  }
   return normalized
     .split("_")
     .filter(Boolean)
@@ -164,8 +177,25 @@ function packetStatusLabel(status: string | null) {
     .join(" ");
 }
 
-function formatPacketValue(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+function packetSignal(packet: SelfEvolutionPacket) {
+  return packet.capabilityHypothesis ?? packet.userValue ?? packet.summary ?? "No signal recorded.";
+}
+
+function packetNextSignal(packet: SelfEvolutionPacket) {
+  const normalizedStatus = packet.status?.trim().toLowerCase() ?? "";
+  if (normalizedStatus === "done") {
+    return "Implemented";
+  }
+  if (packet.approvalRequired && !packet.questionAnswer) {
+    return "Needs Francesco answer";
+  }
+  if (canTriggerPacketImplementation(packet)) {
+    return "Ready to trigger";
+  }
+  if (packet.runtimeInvocation) {
+    return invocationStateLabel(packet.runtimeInvocation);
+  }
+  return packet.validationSignal ?? "Review signal";
 }
 
 function packetStatusBadgeTone(status: string | null) {
@@ -175,6 +205,9 @@ function packetStatusBadgeTone(status: string | null) {
   }
   if (normalized === "discarded") {
     return "discarded";
+  }
+  if (normalized === "blocked") {
+    return "needs_review";
   }
   return "needs_review";
 }
@@ -194,31 +227,55 @@ function PacketExecutionControl({ packet }: PacketExecutionControlProps) {
   });
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [durableRule, setDurableRule] = useState("");
   const selectedAgent = PACKET_RUNTIME_AGENT_OPTIONS.find((option) => option.id === selectedAgentId) ?? PACKET_RUNTIME_AGENT_OPTIONS[0];
   const currentReason = packet.runtimeInvocation?.selectedAgentId === selectedAgent.id && packet.runtimeInvocation.agentSelectionReason ? packet.runtimeInvocation.agentSelectionReason : packetRuntimeAgentReason(selectedAgent.id);
   const actionDisabled = Boolean(pending || !canTriggerPacketImplementation(packet));
   const canLaunch = canTriggerPacketImplementation(packet);
   const agentOptions = PACKET_RUNTIME_AGENT_OPTIONS.map((option) => ({ value: option.id, label: option.label }));
 
-  async function submit() {
-    if (actionDisabled) {
-      return;
+  async function postAction(body: Record<string, unknown>) {
+    const response = await fetch("/api/self-evolution/proposals/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = (await response.json()) as { ok?: boolean; summary?: string; error?: string };
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error ?? `HTTP ${response.status}`);
     }
-    if (!window.confirm(`Launch ${selectedAgent.id} for ${packet.id} and create or reuse its implementation task?`)) {
+    return payload;
+  }
+
+  async function submitAnswer() {
+    if (pending || !answer.trim()) {
       return;
     }
     setPending(true);
     setMessage(null);
     try {
-      const response = await fetch("/api/self-evolution/improvements/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "approve", improvementKey: packet.canonicalKey, agentId: selectedAgent.id }),
-      });
-      const payload = (await response.json()) as { ok?: boolean; summary?: string; error?: string };
-      if (!response.ok || payload.ok === false) {
-        throw new Error(payload.error ?? `HTTP ${response.status}`);
-      }
+      const payload = await postAction({ action: "answer", proposalKey: packet.canonicalKey, answer: answer.trim(), durableRule: durableRule.trim() });
+      setMessage(payload.summary ?? "Answer recorded");
+      window.location.reload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function submit() {
+    if (actionDisabled) {
+      return;
+    }
+    if (!window.confirm(`Trigger ${selectedAgent.id} for ${packet.id} and create or reuse its TaskOps implementation task?`)) {
+      return;
+    }
+    setPending(true);
+    setMessage(null);
+    try {
+      const payload = await postAction({ action: "implement", proposalKey: packet.canonicalKey, agentId: selectedAgent.id });
       setMessage(payload.summary ?? "Submitted");
       window.location.reload();
     } catch (error) {
@@ -238,10 +295,23 @@ function PacketExecutionControl({ packet }: PacketExecutionControlProps) {
             Implementation task
           </a>
         ) : (
-          <span className="muted">Implementation task will be created or reused on launch.</span>
+          <span className="muted">TaskOps implementation task will be created or reused on trigger.</span>
         )}
         <span className="muted">MC object: {packet.canonicalKey}</span>
       </div>
+
+      {packet.approvalRequired && !packet.questionAnswer ? (
+        <div className="self-evolution-answer-control">
+          <p className="muted">Blocked by {packet.approvalBoundary ?? "approval"}. Record Francesco's answer before triggering implementation.</p>
+          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="Francesco answer / decision" rows={3} />
+          <input value={durableRule} onChange={(event) => setDurableRule(event.target.value)} placeholder="Optional durable rule for future runs" />
+          <button type="button" className="action-trigger" disabled={pending || !answer.trim()} onClick={() => void submitAnswer()}>
+            {pending ? "Recording..." : "Record answer"}
+          </button>
+        </div>
+      ) : packet.questionAnswer ? (
+        <p className="muted">Question resolved{packet.answeredAt ? ` ${formatDateTime(packet.answeredAt)}` : ""}: {packet.questionAnswer}</p>
+      ) : null}
 
       {packet.runtimeInvocation ? <p className="muted">{invocationStateLabel(packet.runtimeInvocation)}</p> : null}
       {packet.runtimeInvocation?.error ? <p className="action-message">{packet.runtimeInvocation.error}</p> : null}
@@ -249,11 +319,51 @@ function PacketExecutionControl({ packet }: PacketExecutionControlProps) {
       {canLaunch ? (
         <div className="self-evolution-launch-control">
           <button type="button" className="action-trigger self-evolution-launch-button" disabled={actionDisabled} onClick={() => void submit()}>
-            {pending ? "Launching..." : "Accept with"}
+            {pending ? "Triggering..." : "Trigger with"}
           </button>
           <CompactSelect value={selectedAgent.id} options={agentOptions} onChange={setSelectedAgentId} ariaLabel="Launch agent" className="self-evolution-agent-picker" />
         </div>
       ) : null}
+      {message ? <p className="action-message">{message}</p> : null}
+    </div>
+  );
+}
+
+function ManualRunControl() {
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function submit() {
+    if (pending) {
+      return;
+    }
+    setPending(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/self-evolution/proposals/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "run-manual" }),
+      });
+      const payload = (await response.json()) as { ok?: boolean; summary?: string; error?: string };
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error ?? `HTTP ${response.status}`);
+      }
+      setMessage(payload.summary ?? "Manual run generated");
+      window.location.reload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="self-evolution-invocation-card">
+      <p className="muted">Manual dual-entity loop: generator creates proposals, implementer writes feedback, TaskOps remains the implementation unit.</p>
+      <button type="button" className="action-trigger self-evolution-launch-button" disabled={pending} onClick={() => void submit()}>
+        {pending ? "Running..." : "Run generator + implementer review"}
+      </button>
       {message ? <p className="action-message">{message}</p> : null}
     </div>
   );
@@ -272,7 +382,8 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
 
   const visiblePackets = useMemo(() => {
     if (!selectedDate) {
-      return selfEvolution.packets.filter(isActiveReviewItem);
+      const activePackets = selfEvolution.packets.filter(isActiveReviewItem);
+      return activePackets.length > 0 ? activePackets : currentRun?.packets ?? [];
     }
     const byKey = new Map<string, SelfEvolutionPacket>();
     for (const packet of currentRun?.packets ?? []) {
@@ -364,7 +475,7 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
         <div className="self-evolution-filter-banner">
           <div>
             <strong>{formatDisplayDayDate(selectedDate)}</strong>
-            <p className="muted">Focused day view for supervised self-evolution improvements.</p>
+            <p className="muted">Focused manual run view for dual-entity proposals.</p>
           </div>
           <a className="action-trigger" href="/ops">
             Show Ops
@@ -377,33 +488,31 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
 
       <section className="ops-grid">
         <div className="ops-field">
-          <span>Review day</span>
-          <strong>{currentDate ? formatDisplayDayDate(currentDate) : "none"}</strong>
-          <small>{currentGeneratedAt ? `Generated ${formatDateTime(currentGeneratedAt)}` : "No Obsidian daily note found yet."}</small>
+          <span>Manual run</span>
+          <strong>{currentDate ?? "none"}</strong>
+          <small>{currentGeneratedAt ? `Generated ${formatDateTime(currentGeneratedAt)}` : "No manual run artifact found yet."}</small>
         </div>
         <div className="ops-field">
           <span>Gate status</span>
           <strong>{gateStatus == null ? "unknown" : gateStatus ? "PASS" : "FAIL"}</strong>
-          <small>{packetCount} proposed improvement{packetCount === 1 ? "" : "s"}</small>
+          <small>{packetCount} proposal{packetCount === 1 ? "" : "s"}</small>
         </div>
         <div className="ops-field">
-          <span>Review task</span>
-          <strong>{reviewTask?.id ?? "none"}</strong>
-          <small>{reviewTask ? `${reviewTask.status ?? "unknown"} · ${reviewTask.title ?? "Review task"}` : "No active review task found."}</small>
+          <span>TaskOps evolve point</span>
+          <strong>{reviewTask?.id ?? "per proposal"}</strong>
+          <small>{reviewTask ? `${reviewTask.status ?? "unknown"} · ${reviewTask.title ?? "Review task"}` : "Implementation tasks are created per accepted proposal."}</small>
         </div>
         <div className="ops-field">
-          <span>Production cron</span>
-          <strong>{cronJob?.lastRunStatus ?? "none"}</strong>
-          <small>
-            Last {formatDateTime(cronJob?.lastRunAtMs ?? null)} · Next {formatDateTime(cronJob?.nextRunAtMs ?? null)}
-          </small>
+          <span>Retired cron</span>
+          <strong>{cronJob ? "still listed" : "retired"}</strong>
+          <small>{cronJob ? `Last ${formatDateTime(cronJob.lastRunAtMs)} · Next ${formatDateTime(cronJob.nextRunAtMs)}` : "No scheduled self-evolution loop is active."}</small>
         </div>
       </section>
 
       <div className="action-row ops-action-row">
         {currentRun ? (
           <button type="button" className="metric-action" onClick={() => openDocument(currentRun.note)} disabled={!currentRun.note.exists}>
-            Open day note
+            Open manual run
           </button>
         ) : null}
         {reviewTask ? (
@@ -415,7 +524,7 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
           <summary>Reference docs</summary>
           <div className="self-evolution-reference-actions">
             <button type="button" className="metric-action" onClick={() => openDocument(selfEvolution.links.index)} disabled={!selfEvolution.links.index.exists}>
-              Review index
+              Operating contract
             </button>
             <button type="button" className="metric-action" onClick={() => openDocument(selfEvolution.links.systemMap)} disabled={!selfEvolution.links.systemMap.exists}>
               System map
@@ -433,19 +542,19 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
         </details>
       </div>
 
+      <ManualRunControl />
+
       <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Domain</th>
-              <th>Improvement</th>
-              <th>Value</th>
-              <th>Complexity</th>
-              <th>Risk</th>
+              <th>Run</th>
+              <th>Proposal</th>
+              <th>Signal</th>
+              <th>Boundary</th>
+              <th>Decision</th>
               <th>Status</th>
-              <th>Owner</th>
-              <th>Actions</th>
+              <th>Next</th>
             </tr>
           </thead>
           <tbody>
@@ -459,11 +568,10 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
                   <tr className={`meeting-row ${expanded ? "meeting-row-active" : ""} ${focused ? "self-evolution-row-focused" : ""}`}>
                     <td>
                       <a className="obsidian-inline-link" href={buildSelfEvolutionDayHref(displayDate, packet.id)}>
-                        {packet.dates && packet.dates.length > 1 ? `${packet.dates.length} days · ${formatDisplayDayDate(displayDate)}` : formatDisplayDayDate(displayDate)}
+                        {packet.dates && packet.dates.length > 1 ? `${packet.dates.length} runs · ${displayDate}` : displayDate}
                       </a>
-                      {packet.dates.length > 1 ? <small className="muted">+{packet.dates.length - 1} linked day{packet.dates.length === 2 ? "" : "s"}</small> : null}
+                      {packet.dates.length > 1 ? <small className="muted">+{packet.dates.length - 1} linked run{packet.dates.length === 2 ? "" : "s"}</small> : null}
                     </td>
-                    <td>{packet.domain}</td>
                     <td>
                       <button
                         type="button"
@@ -479,42 +587,39 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
                       </button>
                       {packet.summary && packet.summary !== packet.title ? <small className="muted">{packet.summary}</small> : null}
                     </td>
-                    <td>{formatPacketValue(packet.value)}</td>
-                    <td>{packet.complexity}</td>
-                    <td>{packet.risk}</td>
+                    <td>
+                      <span>{packetSignal(packet)}</span>
+                      {packet.validationSignal ? <small className="muted">Validation: {packet.validationSignal}</small> : null}
+                    </td>
+                    <td>
+                      {packet.approvalBoundary ?? packet.approvalClass ?? "none"}
+                      {packet.questionAnswer ? <small className="muted">Answered</small> : null}
+                    </td>
+                    <td>
+                      {packet.decision ? packetStatusLabel(packet.decision) : packet.evidenceQuality ?? "Not reviewed"}
+                      {packet.decisionRationale ? <small className="muted">{packet.decisionRationale}</small> : null}
+                    </td>
                     <td>
                       <PacketStatusBadge status={packet.status} />
                     </td>
-                    <td>{packet.owner}</td>
-                    <td>
-                      {canDiscardPacket(packet) ? (
-                        <div className="self-evolution-inline-actions">
-                          <ActionButton
-                            endpoint="/api/self-evolution/improvements/action"
-                            label="Discard"
-                            confirmText={`Move ${packet.id} to the self-evolution attic?`}
-                            body={{ action: "discard", improvementKey: packet.canonicalKey }}
-                          />
-                        </div>
-                      ) : null}
-                    </td>
+                    <td>{packetNextSignal(packet)}</td>
                   </tr>
                   {expanded ? (
                     <tr className="mynt-expanded-row">
-                      <td colSpan={9}>
+                      <td colSpan={7}>
                         <div className="self-evolution-packet-detail">
                           <div className="self-evolution-packet-links">
                             <button type="button" className="action-trigger" onClick={() => openDocument(packet.note)} disabled={!packet.note.exists}>
-                              Full daily note
+                              Manual run artifact
                             </button>
                             {packet.document ? (
                               <button type="button" className="action-trigger" onClick={() => openDocument(packet.document)} disabled={!packet.document.exists}>
-                                Improvement note
+                                Proposal details
                               </button>
                             ) : null}
                             {packet.reviewTask ? (
                               <a className="action-trigger" href={buildWorkTaskHref(packet.reviewTask.id)}>
-                                Open review task
+                                Open TaskOps task
                               </a>
                             ) : null}
                             <span className="muted">
@@ -528,7 +633,19 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
                             </div>
                             <div>
                               <dt>Approval</dt>
-                              <dd>{packet.approvalClass ?? packet.approvalClassification ?? "review"}</dd>
+                              <dd>{packet.approvalBoundary ?? packet.approvalClass ?? packet.approvalClassification ?? "none"}</dd>
+                            </div>
+                            <div>
+                              <dt>User value</dt>
+                              <dd>{packet.userValue ?? "No user value recorded."}</dd>
+                            </div>
+                            <div>
+                              <dt>Implementer decision</dt>
+                              <dd>{packet.decision ? `${packet.decision}: ${packet.decisionRationale ?? ""}` : "No implementer decision recorded."}</dd>
+                            </div>
+                            <div>
+                              <dt>Generator feedback</dt>
+                              <dd>{packet.generatorFeedback ?? "No feedback recorded."}</dd>
                             </div>
                             <div>
                               <dt>Rollback</dt>
@@ -543,11 +660,11 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
                               <dd>{packet.evidence.length > 0 ? packet.evidence.join("; ") : "No evidence refs recorded."}</dd>
                             </div>
                           </dl>
-                          {canTriggerPacketImplementation(packet) || packet.runtimeInvocation ? <PacketExecutionControl packet={packet} /> : null}
+                          <PacketExecutionControl packet={packet} />
                           {packet.document?.markdown ? (
                             <ObsidianMarkdown markdown={packet.document.markdown} documents={linkedDocuments} onOpenDocument={openDocument} resolveInlineHref={resolveInlineHref} />
                           ) : (
-                            <p className="muted">Improvement details were not found in this Obsidian review note.</p>
+                            <p className="muted">Proposal details were not found in this manual run artifact.</p>
                           )}
                         </div>
                       </td>
@@ -558,7 +675,7 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
             })}
             {visiblePackets.length === 0 ? (
               <tr>
-                <td colSpan={8}>{selectedDate ? "No proposed improvements were parsed for this day. Open the daily note for clean-state evidence." : "No proposed improvements parsed yet."}</td>
+                <td colSpan={7}>{selectedDate ? "No proposals were parsed for this manual run. Open the run artifact for clean-state evidence." : "No active manual proposals parsed yet. If the latest run only contains duplicates or completed work, it should still appear here with that status."}</td>
               </tr>
             ) : null}
           </tbody>
@@ -569,7 +686,7 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
         <table>
           <thead>
             <tr>
-              <th>Approved write</th>
+              <th>Recorded write</th>
               <th>Target</th>
             </tr>
           </thead>
@@ -582,7 +699,7 @@ export function SelfEvolutionPanel({ selfEvolution, cronJob, selectedDate, selec
             ))}
             {mutatingActions.length === 0 ? (
               <tr>
-                <td colSpan={2}>No approved write actions recorded.</td>
+                <td colSpan={2}>No write actions recorded for this manual run.</td>
               </tr>
             ) : null}
           </tbody>

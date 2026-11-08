@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent } from "react";
+import { CanvasTexture, Sprite, SpriteMaterial, type Object3D } from "three";
 import type { AccountabilityForceGraphHandle, AccountabilityForceGraphProps } from "./accountability-force-graph";
 import type { AccountabilityGraph, AccountabilityGraphLink, AccountabilityGraphNode } from "../lib/accountability-graph";
 
@@ -16,6 +17,8 @@ const ForceGraph = dynamic(
 type AccountabilityGraphCanvasProps = {
   graph: AccountabilityGraph;
   selectedNodeId: string | null;
+  showConcepts?: boolean;
+  showPersonLabels?: boolean;
   resetSignal: number;
   unpinSelectedSignal: number;
   unpinAllSignal: number;
@@ -78,14 +81,28 @@ function endpointId(endpoint: unknown) {
   return "";
 }
 
-function nodeColor(node: AccountabilityGraphNode, selectedNodeId: string | null, highlight: HighlightState) {
+function conceptHue(conceptId: string) {
+  let hash = 0;
+  for (const char of conceptId) {
+    hash = (hash * 31 + char.charCodeAt(0)) % 360;
+  }
+  return hash;
+}
+
+function nodeColor(node: AccountabilityGraphNode, selectedNodeId: string | null, highlight: HighlightState, showConcepts = false) {
   if (highlight && !highlight.nodeIds.has(node.id)) {
     return node.nodeType === "assertion" ? "#23262f" : "#2d3340";
   }
   if (node.id === selectedNodeId) {
     return "#ffffff";
   }
+  if (node.nodeType === "concept") {
+    return `hsl(${conceptHue(node.conceptId)} 84% 54%)`;
+  }
   if (node.nodeType === "assertion") {
+    if (showConcepts && node.concept) {
+      return `hsl(${conceptHue(node.concept.id)} 82% ${node.reviewStatus === "needs_review" ? "58%" : "42%"})`;
+    }
     if (node.reviewStatus === "needs_review") {
       return node.kind === "action" ? "#ffba0d" : "#58d68d";
     }
@@ -101,6 +118,9 @@ function nodeColor(node: AccountabilityGraphNode, selectedNodeId: string | null,
 }
 
 function nodeValue(node: AccountabilityGraphNode) {
+  if (node.nodeType === "concept") {
+    return 7 + Math.sqrt(Math.max(1, node.assertionCount)) * 4;
+  }
   if (node.nodeType === "assertion") {
     return node.kind === "action" ? 4.8 : 5.4;
   }
@@ -123,6 +143,9 @@ function linkColor(link: AccountabilityGraphLink, highlight: HighlightState) {
   if (link.type === "same_meeting") {
     return highlight ? "rgba(203, 213, 225, 0.58)" : "rgba(148, 163, 184, 0.24)";
   }
+  if (link.type === "semantic_group") {
+    return highlight ? "rgba(34, 211, 238, 0.96)" : "rgba(34, 211, 238, 0.42)";
+  }
   return highlight ? "rgba(125, 211, 252, 0.76)" : "rgba(125, 211, 252, 0.34)";
 }
 
@@ -130,16 +153,93 @@ function linkWidth(link: AccountabilityGraphLink, highlight: HighlightState) {
   if (highlight && !highlight.linkIds.has(link.id)) {
     return 0.28;
   }
-  const base = link.type === "assigned_action" || link.type === "owns_decision" ? 1.45 : Math.min(2.2, 0.55 + link.weight * 0.25);
+  const base = link.type === "assigned_action" || link.type === "owns_decision" ? 1.45 : link.type === "semantic_group" ? 1.15 : Math.min(2.2, 0.55 + link.weight * 0.25);
   return highlight ? base + 1.15 : base;
 }
 
-function nodeLabel(node: AccountabilityGraphNode) {
+function nodeLabel(node: AccountabilityGraphNode, showPersonLabels = false) {
   if (node.nodeType === "person") {
+    if (showPersonLabels) {
+      return "";
+    }
     const total = node.actionCount + node.decisionCount;
     return `${node.displayName}\n${total} owned · ${node.pendingCount} pending${node.email ? `\n${node.email}` : ""}`;
   }
-  return `${node.kind === "action" ? "Action" : "Decision"}: ${node.summary}\n${node.meetingTitle}\n${node.reviewStatus === "needs_review" ? "Needs review" : "Accepted"}`;
+  if (node.nodeType === "concept") {
+    const source = node.assignmentSources.includes("semantic_auto") ? "semantic auto" : node.assignmentSources.join("/") || "source n/a";
+    return `Semantic group: ${node.label}\n${node.assertionCount} assertions · ${node.people.length} people\n${source}${node.averageConfidence == null ? "" : ` · ${Math.round(node.averageConfidence * 100)}%`}`;
+  }
+  return `${node.kind === "action" ? "Action" : "Decision"}: ${node.summary}\n${node.meetingTitle}\n${node.reviewStatus === "needs_review" ? "Needs review" : "Accepted"}${node.concept ? `\nConcept: ${node.concept.label}` : ""}`;
+}
+
+function drawRoundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const right = x + width;
+  const bottom = y + height;
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(right - radius, y);
+  context.quadraticCurveTo(right, y, right, y + radius);
+  context.lineTo(right, bottom - radius);
+  context.quadraticCurveTo(right, bottom, right - radius, bottom);
+  context.lineTo(x + radius, bottom);
+  context.quadraticCurveTo(x, bottom, x, bottom - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
+
+function truncateLabel(context: CanvasRenderingContext2D, label: string, maxWidth: number) {
+  if (context.measureText(label).width <= maxWidth) {
+    return label;
+  }
+  let nextLabel = label;
+  while (nextLabel.length > 3 && context.measureText(`${nextLabel}...`).width > maxWidth) {
+    nextLabel = nextLabel.slice(0, -1);
+  }
+  return `${nextLabel.trimEnd()}...`;
+}
+
+function createPersonLabelObject(node: AccountabilityGraphNode): Object3D {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context || node.nodeType !== "person") {
+    return new Sprite();
+  }
+
+  const scale = 2;
+  const fontSize = 28;
+  const horizontalPadding = 18;
+  const verticalPadding = 10;
+  const maxTextWidth = 280;
+  context.font = `600 ${fontSize}px Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  const label = truncateLabel(context, node.displayName, maxTextWidth);
+  const textWidth = Math.ceil(context.measureText(label).width);
+  const width = textWidth + horizontalPadding * 2;
+  const height = fontSize + verticalPadding * 2;
+
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  context.scale(scale, scale);
+  context.font = `600 ${fontSize}px Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  drawRoundedRect(context, 0.5, 0.5, width - 1, height - 1, 10);
+  context.fillStyle = "rgba(5, 6, 10, 0.78)";
+  context.fill();
+  context.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  context.lineWidth = 1;
+  context.stroke();
+  context.fillStyle = "#f7f9ff";
+  context.fillText(label, width / 2, height / 2 + 1);
+
+  const texture = new CanvasTexture(canvas);
+  const material = new SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
+  const sprite = new Sprite(material);
+  const nodeRadius = Math.cbrt(nodeValue(node)) * 4;
+  sprite.scale.set(width / 8, height / 8, 1);
+  sprite.position.y = nodeRadius + height / 16 + 4;
+  sprite.renderOrder = 10;
+  return sprite;
 }
 
 function linkLabel(link: AccountabilityGraphLink) {
@@ -153,6 +253,9 @@ function linkDistance(link: AccountabilityGraphLink) {
   if (link.type === "same_meeting") {
     return 38;
   }
+  if (link.type === "semantic_group") {
+    return 54;
+  }
   if (link.type === "associated_identity") {
     return 96;
   }
@@ -162,6 +265,9 @@ function linkDistance(link: AccountabilityGraphLink) {
 function linkStrength(link: AccountabilityGraphLink) {
   if (link.type === "same_meeting") {
     return 0.08;
+  }
+  if (link.type === "semantic_group") {
+    return 0.48;
   }
   if (link.type === "participant_context") {
     return 0.18;
@@ -173,7 +279,7 @@ function createTypeSeparationForce() {
   let nodes: PositionedGraphNode[] = [];
   const force = (alpha: number) => {
     for (const node of nodes) {
-      const targetY = node.nodeType === "assertion" ? (node.kind === "action" ? -58 : 58) : 0;
+      const targetY = node.nodeType === "assertion" ? (node.kind === "action" ? -58 : 58) : node.nodeType === "concept" ? -8 : 0;
       node.vy = (node.vy ?? 0) + (targetY - (node.y ?? 0)) * 0.018 * alpha;
     }
 
@@ -185,7 +291,7 @@ function createTypeSeparationForce() {
         const dy = (right.y ?? 0) - (left.y ?? 0);
         const dz = (right.z ?? 0) - (left.z ?? 0);
         const distance = Math.hypot(dx, dy, dz) || 1;
-        const minDistance = left.nodeType === "person" && right.nodeType === "person" ? 40 : 32;
+        const minDistance = left.nodeType === "concept" || right.nodeType === "concept" ? 54 : left.nodeType === "person" && right.nodeType === "person" ? 40 : 32;
         if (distance >= minDistance) {
           continue;
         }
@@ -304,6 +410,8 @@ function projectGraphNodeToScreen(
 export function AccountabilityGraphCanvas({
   graph,
   selectedNodeId,
+  showConcepts = false,
+  showPersonLabels = true,
   resetSignal,
   unpinSelectedSignal,
   unpinAllSignal,
@@ -345,6 +453,17 @@ export function AccountabilityGraphCanvas({
       links: graph.links.map((link) => ({ ...link })),
     }),
     [graph, pinnedPositions],
+  );
+  const personLabelObject = useMemo<AccountabilityForceGraphProps["nodeThreeObject"]>(
+    () =>
+      showPersonLabels
+        ? (((node: AccountabilityGraphNode) => (node.nodeType === "person" ? createPersonLabelObject(node) : null)) as AccountabilityForceGraphProps["nodeThreeObject"])
+        : undefined,
+    [showPersonLabels],
+  );
+  const personLabelObjectExtend = useMemo<AccountabilityForceGraphProps["nodeThreeObjectExtend"]>(
+    () => (showPersonLabels ? ((node: AccountabilityGraphNode) => node.nodeType === "person") : undefined),
+    [showPersonLabels],
   );
 
   const highlight = useMemo<HighlightState>(() => {
@@ -555,11 +674,13 @@ export function AccountabilityGraphCanvas({
         height={size.height}
         backgroundColor="rgba(4, 6, 13, 0)"
         nodeId="id"
-        nodeLabel={nodeLabel}
-        nodeColor={(node) => nodeColor(node, selectedNodeId, highlight)}
+        nodeLabel={(node) => nodeLabel(node, showPersonLabels)}
+        nodeColor={(node) => nodeColor(node, selectedNodeId, highlight, showConcepts)}
         nodeVal={nodeValue}
         nodeOpacity={0.94}
         nodeResolution={16}
+        nodeThreeObject={personLabelObject}
+        nodeThreeObjectExtend={personLabelObjectExtend}
         linkSource="source"
         linkTarget="target"
         linkLabel={linkLabel}
@@ -587,7 +708,7 @@ export function AccountabilityGraphCanvas({
           }
           onNodeSelect(node, nextAnchor);
         }}
-        onNodeHover={(node) => onNodeHover(node)}
+        onNodeHover={(node) => onNodeHover(showPersonLabels && node?.nodeType === "person" ? null : node)}
         onNodeDragEnd={(node) => {
           const positioned = node as PositionedGraphNode;
           if (typeof positioned.x !== "number" || typeof positioned.y !== "number" || typeof positioned.z !== "number") {

@@ -2,21 +2,23 @@
   "name": "@ocmc/web",
   "private": true,
   "scripts": {
-    "dev": "HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3000} next dev",
-    "build": "next build && node scripts/prepare-standalone.mjs",
-    "start": "next start",
-    "start:local": "HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3099} node .next/standalone/apps/web/server.js",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "dev": "../../scripts/with-env.sh zsh -lc 'HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3000} exec next dev'",
+    "build": "../../scripts/with-env.sh zsh -lc 'next build && node scripts/prepare-standalone.mjs'",
+    "start": "../../scripts/with-env.sh next start",
+    "start:local": "../../scripts/with-env.sh zsh -lc 'HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-3099} exec node .next/standalone/apps/web/server.js'",
+    "typecheck": "../../scripts/with-env.sh tsc --noEmit",
+    "test": "../../scripts/with-env.sh vitest run",
+    "test:watch": "../../scripts/with-env.sh vitest"
   },
   "dependencies": {
     "@ocmc/db": "workspace:*",
     "@ocmc/shared": "workspace:*",
+    "@openclaw/semantic-layer": "file:/Users/fonkey-oc/.openclaw/lib/semantic-layer",
     "next": "16.2.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-force-graph-3d": "1.29.1"
+    "react-force-graph-3d": "1.29.1",
+    "three": "0.184.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -24,6 +26,7 @@
     "@types/node": "^24.6.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "@types/three": "^0.184.1",
     "jsdom": "^29.1.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",

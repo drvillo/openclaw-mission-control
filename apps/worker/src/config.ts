@@ -12,3 +12,4 @@ export const TASKS_ROOT = path.join(OBSIDIAN_VAULT, "Tasks");
 export const FATHOM_RECORDINGS_ROOT = path.join(OBSIDIAN_VAULT, "Meeting Recordings", "Fathom");
 export const TASK_BOARD_WRAPPER = path.join(OPENCLAW_HOME, "workspace-task-ops-agent", "scripts", "task_board.py");
 export const MISSION_CONTROL_INGEST_TOKEN = process.env.MISSION_CONTROL_INGEST_TOKEN ?? "";
+export const MISSION_CONTROL_SEMANTIC_CONCEPTS = process.env.MISSION_CONTROL_SEMANTIC_CONCEPTS === "1" || process.env.MISSION_CONTROL_SEMANTIC_CONCEPTS === "true";

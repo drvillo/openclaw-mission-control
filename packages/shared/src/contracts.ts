@@ -212,6 +212,56 @@ export const WorkerSnapshotSchema = z.object({
   }),
 });
 
+export const PrSwarmEventSchema = z.object({
+  eventId: z.string().min(1),
+  source: z.enum(["telegram", "openclaw_webhook", "mission_control"]),
+  repo: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  prUrl: z.string().url(),
+  headSha: z.string().optional(),
+  action: z.enum(["opened", "reopened", "synchronize", "ready_for_review", "manual_review", "poll_seen"]),
+  receivedAt: z.string().min(1),
+  bridgeVerified: z.boolean().optional(),
+  githubRunId: z.string().optional(),
+  githubRunAttempt: z.string().optional(),
+  rawPayloadPath: z.string().optional(),
+});
+
+export const PrSwarmReviewLensConfigSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(["skill", "agent", "static_check"]),
+  path: z.string().optional(),
+  agentId: z.string().optional(),
+  required: z.boolean(),
+  timeoutSeconds: z.number().int().positive().optional(),
+});
+
+export const PrSwarmFixabilityDecisionSchema = z.object({
+  findingId: z.string().min(1),
+  policy: z.enum(["disabled", "dry_run_allowed", "needs_human_approval", "autonomous_allowed", "blocked"]),
+  reason: z.string().min(1),
+  allowedClasses: z.array(z.string()),
+  maxFiles: z.number().int().nonnegative(),
+  maxLines: z.number().int().nonnegative(),
+  targetMode: z.enum(["patch_comment", "fix_branch", "pr_branch", "none"]),
+});
+
+export const PrSwarmAutofixAttemptSchema = z.object({
+  id: z.string().min(1),
+  repo: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  baseHeadSha: z.string().min(1),
+  mode: z.enum(["dry_run_patch", "human_approved_apply", "autonomous_apply"]),
+  status: z.enum(["queued", "running", "patch_generated", "applied", "blocked", "failed"]),
+  selectedFindingIds: z.array(z.string()),
+  codingAgentSessionKey: z.string().optional(),
+  patchArtifactPath: z.string().optional(),
+  branchName: z.string().optional(),
+  changedFiles: z.array(z.string()),
+  verification: z.array(z.object({ command: z.string(), result: z.enum(["passed", "failed", "not_run"]), reason: z.string().optional() })),
+  rereviewRunId: z.string().optional(),
+});
+
 export type FlowRoute = z.infer<typeof FlowRouteSchema>;
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 export type TaskSnapshot = z.infer<typeof TaskSnapshotSchema>;
@@ -223,3 +273,7 @@ export type CronJob = z.infer<typeof CronJobSchema>;
 export type CronRun = z.infer<typeof CronRunSchema>;
 export type RoutingAttempt = z.infer<typeof RoutingAttemptSchema>;
 export type WorkerSnapshot = z.infer<typeof WorkerSnapshotSchema>;
+export type PrSwarmEvent = z.infer<typeof PrSwarmEventSchema>;
+export type PrSwarmReviewLensConfig = z.infer<typeof PrSwarmReviewLensConfigSchema>;
+export type PrSwarmFixabilityDecision = z.infer<typeof PrSwarmFixabilityDecisionSchema>;
+export type PrSwarmAutofixAttempt = z.infer<typeof PrSwarmAutofixAttemptSchema>;

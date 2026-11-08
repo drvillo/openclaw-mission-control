@@ -569,6 +569,10 @@ tbody tr:hover {
 
 .task-search {
   flex: 1 1 20rem;
+  position: relative;
+  display: grid;
+  gap: 0.28rem;
+  align-content: start;
 }
 
 .task-filters,
@@ -609,6 +613,39 @@ tbody tr:hover {
   background: #09090b;
   color: var(--ink);
   padding: 0.5rem 0.7rem;
+}
+
+.task-search-active input {
+  padding-right: 4.3rem;
+}
+
+.task-search-clear {
+  position: absolute;
+  top: 0.31rem;
+  right: 0.34rem;
+  min-height: 1.72rem;
+  padding: 0 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-search-clear:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.task-search-summary {
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  line-height: 1.2;
 }
 
 .task-search input::placeholder,
@@ -725,7 +762,10 @@ tbody tr:hover {
   flex-direction: column;
   min-width: 220px;
   min-height: 28rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: #101014;
+  overflow: hidden;
 }
 
 .task-column-active {
@@ -1147,6 +1187,23 @@ tbody tr:hover {
   min-height: 38px;
 }
 
+.self-evolution-answer-control {
+  display: grid;
+  gap: 0.5rem;
+  width: min(100%, 44rem);
+}
+
+.self-evolution-answer-control textarea,
+.self-evolution-answer-control input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 0.7rem 0.8rem;
+  font: inherit;
+}
+
 .self-evolution-filter-banner {
   display: flex;
   align-items: center;
@@ -1312,12 +1369,222 @@ tbody tr:hover {
   line-height: 1.5;
 }
 
+.ops-next-action-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(73, 43, 255, 0.14), var(--panel));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.16);
+}
+
+.ops-next-action-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ops-next-action-head h2 {
+  margin: 0;
+}
+
+.ops-next-action-readonly,
+.ops-next-action-priority {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.ops-next-action-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.ops-next-action-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.85rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.ops-next-action-rank {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.ops-next-action-body {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.ops-next-action-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ops-next-action-title-row h3,
+.ops-next-action-body p {
+  margin: 0;
+}
+
+.ops-next-action-body p,
+.ops-next-action-rationale,
+.ops-next-action-evidence {
+  color: var(--ink-soft);
+}
+
+.ops-next-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin: 0;
+}
+
+.ops-next-action-meta div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.ops-next-action-meta dt {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ops-next-action-meta dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.ops-next-action-evidence {
+  margin: 0;
+  padding-left: 1.05rem;
+  line-height: 1.45;
+}
+
+.ops-next-action-priority-critical {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger), transparent 45%);
+}
+
+.ops-next-action-priority-high {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning), transparent 45%);
+}
+
+.ops-next-action-priority-medium {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent), transparent 45%);
+}
+
 .routing-row-error td:first-child {
   box-shadow: inset 3px 0 0 var(--danger);
 }
 
 .routing-row-warning td:first-child {
   box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.pr-swarm-panel {
+  display: grid;
+  gap: 1.1rem;
+}
+
+.pr-swarm-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.pr-swarm-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.pr-swarm-table-shell {
+  margin-top: 0;
+}
+
+.pr-swarm-run-list {
+  margin-top: 0;
+}
+
+.pr-swarm-mono {
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
+.pr-swarm-panel .routing-badge a {
+  color: inherit;
+}
+
+.pr-swarm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.pr-swarm-run-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.pr-swarm-run-detail section {
+  min-width: 0;
+}
+
+.pr-swarm-run-detail h4 {
+  margin-bottom: 0.55rem;
+}
+
+.pr-swarm-run-detail table {
+  min-width: 560px;
+}
+
+.pr-swarm-run-evidence {
+  grid-column: 1 / -1;
+}
+
+.pr-swarm-actions {
+  grid-column: 1 / -1;
+}
+
+.pr-swarm-action {
+  margin-top: 0;
+}
+
+.pr-swarm-action-secondary {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+
+.pr-swarm-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .routing-details {
@@ -1457,6 +1724,14 @@ tbody tr:hover {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-2);
+}
+
+.mynt-toolbar .task-search {
+  flex: 1 1 24rem;
+}
+
+.accountability-graph-search {
+  width: 100%;
 }
 
 .mynt-view-toggle {
@@ -1603,6 +1878,55 @@ tbody tr:hover {
   width: 0.86rem;
   height: 0.86rem;
   accent-color: #ffba0d;
+}
+
+.accountability-concept-panel {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--line);
+}
+
+.accountability-concept-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.65rem;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.accountability-concept-region-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-height: 8.5rem;
+  overflow: auto;
+}
+
+.accountability-concept-region {
+  display: grid;
+  gap: 0.16rem;
+  max-width: 16rem;
+  padding: 0.55rem 0.68rem;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 12px;
+  background: radial-gradient(circle at top left, rgba(125, 211, 252, 0.14), rgba(255, 255, 255, 0.035));
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.accountability-concept-region-active,
+.accountability-concept-region:hover {
+  border-color: rgba(255, 186, 13, 0.62);
+  box-shadow: 0 0 0 1px rgba(255, 186, 13, 0.16);
+}
+
+.accountability-concept-region span {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
 }
 
 .accountability-graph-canvas {
@@ -1768,6 +2092,208 @@ tbody tr:hover {
 
 .accountability-graph-assertion-detail .mynt-item-card {
   border-color: var(--line-strong);
+}
+
+.accountability-concept-overlay-body {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: auto;
+}
+
+.accountability-concept-detail-card,
+.accountability-concept-curation {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.accountability-concept-create-form,
+.accountability-concept-curation form,
+.accountability-concept-assignment-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.accountability-concept-create-form input,
+.accountability-concept-curation input,
+.accountability-concept-curation textarea,
+.accountability-concept-curation select,
+.accountability-concept-assignment-form select {
+  min-width: min(18rem, 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+  padding: 0.52rem 0.62rem;
+}
+
+.accountability-concept-assignment-form label {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.semantic-concepts-panel {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.semantic-concepts-head,
+.semantic-proposal-title-row,
+.semantic-proposal-actions,
+.semantic-pull-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  justify-content: space-between;
+}
+
+.semantic-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.semantic-status-grid span {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.semantic-proposal-card {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.semantic-status-grid strong {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.semantic-pull-form {
+  justify-content: flex-start;
+}
+
+.semantic-pull-form input,
+.semantic-run-picker select,
+.semantic-proposal-actions select {
+  min-width: min(24rem, 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+  padding: 0.52rem 0.62rem;
+}
+
+.semantic-run-picker {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.semantic-proposal-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.semantic-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(21rem, 0.42fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.semantic-evidence-sidebar {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.semantic-evidence-sidebar h3 {
+  margin: 0;
+}
+
+.semantic-evidence-link {
+  cursor: pointer;
+  font: inherit;
+}
+
+.semantic-evidence-link:hover:not(:disabled) {
+  border-color: rgba(255, 186, 13, 0.4);
+  color: var(--text);
+}
+
+.semantic-evidence-link:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.semantic-proposal-section,
+.semantic-concept-correction-form,
+.semantic-pull-details {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.semantic-proposal-section h4 {
+  margin: 0.35rem 0 0;
+}
+
+.semantic-concept-correction-form input,
+.semantic-concept-correction-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+  padding: 0.52rem 0.62rem;
+}
+
+.accountability-concept-split-assertions {
+  display: grid;
+  gap: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.65rem;
+}
+
+.accountability-concept-split-assertions label {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+}
+
+.semantic-proposal-card h4 {
+  margin: 0;
+}
+
+.semantic-readiness {
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  color: #bbf7d0;
+  font-size: 0.75rem;
+}
+
+.semantic-readiness-blocked {
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fde68a;
 }
 
 .accountability-graph-relationships {
@@ -1941,6 +2467,31 @@ tbody tr:hover {
 .mynt-item-kind-decision {
   background: rgba(88, 214, 141, 0.1);
   color: #b9f4d0;
+}
+
+.accountability-concept-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 16rem;
+  padding: 0.18rem 0.46rem;
+  border: 1px solid rgba(125, 211, 252, 0.32);
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.1);
+  color: #bae6fd;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assertion-register-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
 }
 
 .mynt-item-card p {
@@ -2359,6 +2910,12 @@ tbody tr:hover {
   color: var(--danger);
 }
 
+.meeting-review-action-error {
+  max-width: 16rem;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
 .action-reassign-control {
   display: inline-flex;
   flex-wrap: wrap;
@@ -2768,7 +3325,8 @@ tbody tr:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .meetings-layout {
+  .meetings-layout,
+  .semantic-review-layout {
     grid-template-columns: 1fr;
   }
 
@@ -2843,6 +3401,15 @@ tbody tr:hover {
     right: 1rem;
     bottom: 1rem;
     left: 1rem;
+  }
+
+  .pr-swarm-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pr-swarm-run-detail {
+    grid-template-columns: 1fr;
   }
 }
 

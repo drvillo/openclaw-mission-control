@@ -41,6 +41,23 @@ function item(partial: Partial<MyntItem> = {}): MyntItem {
 }
 
 describe("AssertionCard associations", () => {
+  test("renders active concept labels and omits absent concept labels", () => {
+    const { rerender } = render(
+      <AssertionCard
+        item={item({
+          concept: { id: "concept-agency", label: "Investigation agency", summary: "Agency follow-up", status: "active", assignmentSource: "manual", confidence: null },
+        })}
+        pending={false}
+        assigneeIdentities={[]}
+      />,
+    );
+
+    expect(screen.getByText("Concept · Investigation agency")).toBeInTheDocument();
+
+    rerender(<AssertionCard item={item({ concept: null })} pending={false} assigneeIdentities={[]} />);
+    expect(screen.queryByText(/Concept ·/u)).not.toBeInTheDocument();
+  });
+
   test("does not render an association trigger for empty associations", () => {
     render(<AssertionCard item={item()} pending={false} assigneeIdentities={[]} />);
 

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -126,6 +126,7 @@ export type MeetingIngestionPayload = {
 
 export type MeetingIngestionResult = {
   status: "ingested" | "noop";
+  ingestionRunId: string;
   sourceDocumentId: string;
   meetingId: string;
   documentVersionId: string;
@@ -204,6 +205,194 @@ export type AssertionAssociationSyncResult = {
   scannedAssertions: number;
   inserted: number;
   deleted: number;
+};
+
+export type AccountabilityConceptStatus = "active" | "dormant" | "discarded" | "merged";
+export type AccountabilityConceptAssignmentSource = "auto" | "manual" | "semantic_auto";
+
+export type AccountabilityConcept = {
+  conceptId: string;
+  label: string;
+  summary: string;
+  status: AccountabilityConceptStatus;
+  mergedIntoConceptId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AccountabilityConceptAssignment = {
+  assignmentId: string;
+  conceptId: string;
+  assertionKind: "action" | "decision";
+  assertionId: string;
+  source: AccountabilityConceptAssignmentSource;
+  confidence: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AccountabilityConceptMetadata = {
+  id: string;
+  label: string;
+  summary: string;
+  status: AccountabilityConceptStatus;
+  assignmentSource: AccountabilityConceptAssignmentSource;
+  confidence: number | null;
+};
+
+export type AccountabilityConceptEvent = {
+  conceptEventId: string;
+  conceptId: string;
+  eventType: string;
+  payloadJson: string;
+  createdAt: string;
+};
+
+export type SemanticConceptProposalReviewStatus = "pending" | "accepted" | "rejected" | "suppressed" | "merged" | "alias_added";
+
+export type SemanticConceptSuppressionRecord = {
+  suppressionId: string;
+  normalizedLabel: string;
+  proposalId: string | null;
+  reason: string | null;
+  reviewer: string | null;
+  createdAt: string;
+};
+
+export type SemanticConceptProposalRecord = {
+  proposalId: string;
+  proposalRunId: string;
+  canonicalLabelSuggestion: string;
+  definition: string;
+  whyItMatters: string;
+  scope: string;
+  confidence: number;
+  registryAction: string;
+  existingConceptId: string | null;
+  aliasesSuggested: string[];
+  linkedActionIds: string[];
+  linkedDecisionIds: string[];
+  linkedEvidenceWindowIds: string[];
+  reviewStatus: SemanticConceptProposalReviewStatus;
+  targetConceptId: string | null;
+  applyReady: boolean;
+  missingTargets: string[];
+  rawJson: string;
+  importedAt: string;
+  reviewedAt: string | null;
+};
+
+export type SemanticConceptProposalRunRecord = {
+  proposalRunId: string;
+  sourceWindowJson: string;
+  indexVersion: string;
+  registrySnapshotVersion: string;
+  promptVersionJson: string;
+  generatedAt: string;
+  importedAt: string;
+  diagnosticsJson: string;
+  rawJson: string;
+  proposals: SemanticConceptProposalRecord[];
+};
+
+export type SemanticProposalImportResult = {
+  proposalRunId: string;
+  proposalsImported: number;
+  evidencePacketsImported: number;
+  proposalsSkipped?: number;
+  diagnostics?: string[];
+};
+
+export type SemanticProposalApplyResult = {
+  proposalId: string;
+  decision: "accept" | "reject" | "merge" | "add_alias";
+  concept: AccountabilityConcept | null;
+  assignmentsCreatedOrUpdated: number;
+};
+
+export type SemanticProposalAutoApplyResult = {
+  scanned: number;
+  applied: number;
+  skipped: number;
+  proposalRunId: string | null;
+  appliedProposalIds: string[];
+  skippedProposalIds: string[];
+};
+
+export type SemanticAutoApplyResult = {
+  considered: number;
+  applied: number;
+  pending: number;
+  skipped: number;
+  appliedProposalIds: string[];
+};
+
+export type SemanticSuppressionResult = {
+  proposalId: string;
+  suppressionId: string;
+  suppressed: boolean;
+};
+
+export type SemanticRefreshRunStatus = "running" | "completed" | "failed";
+
+export type SemanticRefreshRunRecord = {
+  semanticRefreshRunId: string;
+  status: SemanticRefreshRunStatus;
+  trigger: string;
+  source: string | null;
+  sourceDocumentId: string | null;
+  documentVersionId: string | null;
+  ingestionRunId: string | null;
+  indexVersionId: string | null;
+  proposalRunId: string | null;
+  proposalsImported: number;
+  autoApplied: number;
+  pending: number;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
+export type MeetingIngestionSemanticResultInput = {
+  status: "skipped" | "succeeded" | "failed";
+  message?: string | null;
+  proposalRunId?: string | null;
+  autoAppliedCount?: number | null;
+  finishedAt?: string | null;
+};
+
+export type SemanticAssertionCandidateResolutionInput = {
+  candidateId: string;
+  kind: "action" | "decision" | string;
+  text?: string | null;
+  normalizedText?: string | null;
+  sourceRef?: {
+    canonicalSourcePath?: string | null;
+    contentHash?: string | null;
+    recordingId?: string | null;
+    missionControlId?: string | null;
+    sourceId?: string | null;
+  } | null;
+};
+
+export type SemanticAssertionCandidateResolution = {
+  candidateId: string;
+  kind: "action" | "decision";
+  assertionId: string | null;
+  method: "already_mc_id" | "mission_control_id" | "source_text" | "global_text" | "unresolved";
+  ambiguous: boolean;
+};
+
+export type SemanticProposalRunResolutionResult = {
+  proposalRun: Record<string, unknown>;
+  resolutions: SemanticAssertionCandidateResolution[];
+  unresolved: string[];
+};
+
+export type SemanticProposalTargetResolution = {
+  proposalId: string;
+  applyReady: boolean;
+  missingTargets: string[];
 };
 
 export type MeetingIngestionFailurePayload = {
@@ -843,6 +1032,1301 @@ export function ensureAssertionAssociationSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_assertion_associations_meeting_version ON assertion_associations (meeting_id, document_version_id);
     CREATE INDEX IF NOT EXISTS idx_assertion_associations_identity ON assertion_associations (identity_id);
   `);
+}
+
+export function ensureAccountabilityConceptSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS accountability_concepts (
+      concept_id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      merged_into_concept_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS accountability_concept_assignments (
+      assignment_id TEXT PRIMARY KEY,
+      concept_id TEXT NOT NULL,
+      assertion_kind TEXT NOT NULL,
+      assertion_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      confidence REAL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(assertion_kind, assertion_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS accountability_concept_events (
+      concept_event_id TEXT PRIMARY KEY,
+      concept_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_accountability_concepts_status ON accountability_concepts (status, label);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_assignments_concept ON accountability_concept_assignments (concept_id);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_assignments_assertion ON accountability_concept_assignments (assertion_kind, assertion_id);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_events_concept ON accountability_concept_events (concept_id, created_at);
+  `);
+}
+
+function normalizeConceptStatus(value: string | null | undefined): AccountabilityConceptStatus {
+  return value === "active" || value === "dormant" || value === "discarded" || value === "merged" ? value : "active";
+}
+
+function normalizeConceptAssignmentSource(value: string | null | undefined): AccountabilityConceptAssignmentSource {
+  return value === "manual" || value === "semantic_auto" ? value : "auto";
+}
+
+function conceptRow(row: {
+  conceptId: string;
+  label: string;
+  summary: string | null;
+  status: string | null;
+  mergedIntoConceptId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}): AccountabilityConcept {
+  return {
+    conceptId: row.conceptId,
+    label: row.label,
+    summary: row.summary ?? "",
+    status: normalizeConceptStatus(row.status),
+    mergedIntoConceptId: row.mergedIntoConceptId ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function createAccountabilityConcept(
+  db: DatabaseSync,
+  input: { conceptId?: string | null; label: string; summary?: string | null; status?: AccountabilityConceptStatus },
+  now = new Date().toISOString(),
+): AccountabilityConcept {
+  ensureAccountabilityConceptSchema(db);
+  const label = normalizeIdentityValue(input.label);
+  if (!label) {
+    throw new Error("Concept label is required");
+  }
+  const summary = String(input.summary ?? "").trim();
+  const status = input.status ?? "active";
+  const conceptId = input.conceptId?.trim() || stableId("accountability_concept", label.toLowerCase());
+  db.prepare(`
+    INSERT INTO accountability_concepts (concept_id, label, summary, status, merged_into_concept_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?)
+    ON CONFLICT(concept_id) DO UPDATE SET
+      label = excluded.label,
+      summary = excluded.summary,
+      status = CASE
+        WHEN accountability_concepts.status = 'merged' THEN accountability_concepts.status
+        ELSE excluded.status
+      END,
+      updated_at = excluded.updated_at;
+  `).run(conceptId, label, summary, status, now, now);
+  return getAccountabilityConcept(db, conceptId)!;
+}
+
+export function getAccountabilityConcept(db: DatabaseSync, conceptId: string): AccountabilityConcept | null {
+  ensureAccountabilityConceptSchema(db);
+  const row = db
+    .prepare(
+      `SELECT concept_id as conceptId,
+              label,
+              summary,
+              status,
+              merged_into_concept_id as mergedIntoConceptId,
+              created_at as createdAt,
+              updated_at as updatedAt
+       FROM accountability_concepts
+       WHERE concept_id = ?
+       LIMIT 1;`,
+    )
+    .get(conceptId) as Parameters<typeof conceptRow>[0] | undefined;
+  return row ? conceptRow(row) : null;
+}
+
+export function listAccountabilityConcepts(db: DatabaseSync, statuses?: AccountabilityConceptStatus[]): AccountabilityConcept[] {
+  ensureAccountabilityConceptSchema(db);
+  const allowedStatuses = statuses?.length ? statuses : ["active", "dormant", "discarded", "merged"];
+  const placeholders = allowedStatuses.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT concept_id as conceptId,
+              label,
+              summary,
+              status,
+              merged_into_concept_id as mergedIntoConceptId,
+              created_at as createdAt,
+              updated_at as updatedAt
+       FROM accountability_concepts
+       WHERE status IN (${placeholders})
+       ORDER BY status, lower(label), concept_id;`,
+    )
+    .all(...allowedStatuses) as Array<Parameters<typeof conceptRow>[0]>;
+  return rows.map(conceptRow);
+}
+
+export function recordAccountabilityConceptEvent(
+  db: DatabaseSync,
+  input: { conceptId: string; eventType: string; payload?: unknown; eventId?: string | null },
+  now = new Date().toISOString(),
+): AccountabilityConceptEvent {
+  ensureAccountabilityConceptSchema(db);
+  if (!input.conceptId) {
+    throw new Error("Concept ID is required");
+  }
+  if (!input.eventType) {
+    throw new Error("Concept event type is required");
+  }
+  const payloadJson = JSON.stringify(input.payload ?? {});
+  const conceptEventId = input.eventId?.trim() || `accountability_concept_event_${randomUUID()}`;
+  db.prepare(`
+    INSERT INTO accountability_concept_events (concept_event_id, concept_id, event_type, payload_json, created_at)
+    VALUES (?, ?, ?, ?, ?);
+  `).run(conceptEventId, input.conceptId, input.eventType, payloadJson, now);
+  return { conceptEventId, conceptId: input.conceptId, eventType: input.eventType, payloadJson, createdAt: now };
+}
+
+export function updateAccountabilityConcept(
+  db: DatabaseSync,
+  input: { conceptId: string; label?: string | null; summary?: string | null; status?: AccountabilityConceptStatus },
+  now = new Date().toISOString(),
+): AccountabilityConcept {
+  ensureAccountabilityConceptSchema(db);
+  const current = getAccountabilityConcept(db, input.conceptId);
+  if (!current) {
+    throw new Error("Concept not found");
+  }
+  const label = input.label == null ? current.label : normalizeIdentityValue(input.label);
+  if (!label) {
+    throw new Error("Concept label is required");
+  }
+  const summary = input.summary == null ? current.summary : String(input.summary).trim();
+  const status = input.status ?? current.status;
+  db.prepare(`
+    UPDATE accountability_concepts
+    SET label = ?, summary = ?, status = ?, updated_at = ?
+    WHERE concept_id = ?;
+  `).run(label, summary, status, now, input.conceptId);
+  recordAccountabilityConceptEvent(db, { conceptId: input.conceptId, eventType: "update", payload: { label, summary, status } }, now);
+  return getAccountabilityConcept(db, input.conceptId)!;
+}
+
+export function discardAccountabilityConcept(db: DatabaseSync, conceptId: string, now = new Date().toISOString()): AccountabilityConcept {
+  const concept = updateAccountabilityConcept(db, { conceptId, status: "discarded" }, now);
+  recordAccountabilityConceptEvent(db, { conceptId, eventType: "discard", payload: { conceptId } }, now);
+  return concept;
+}
+
+export function assignAssertionConcept(
+  db: DatabaseSync,
+  input: {
+    conceptId: string;
+    assertionKind: "action" | "decision";
+    assertionId: string;
+    source: AccountabilityConceptAssignmentSource;
+    confidence?: number | null;
+    eventPayload?: Record<string, unknown>;
+  },
+  now = new Date().toISOString(),
+): AccountabilityConceptAssignment {
+  ensureAccountabilityConceptSchema(db);
+  if (!getAccountabilityConcept(db, input.conceptId)) {
+    throw new Error("Concept not found");
+  }
+  if (input.assertionKind !== "action" && input.assertionKind !== "decision") {
+    throw new Error("Assertion kind must be action or decision");
+  }
+  if (!input.assertionId) {
+    throw new Error("Assertion ID is required");
+  }
+  const assignmentId = stableId("accountability_concept_assignment", input.assertionKind, input.assertionId);
+  db.prepare(`
+    INSERT INTO accountability_concept_assignments (
+      assignment_id, concept_id, assertion_kind, assertion_id, source, confidence, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(assertion_kind, assertion_id) DO UPDATE SET
+      concept_id = excluded.concept_id,
+      source = excluded.source,
+      confidence = excluded.confidence,
+      updated_at = excluded.updated_at;
+  `).run(
+    assignmentId,
+    input.conceptId,
+    input.assertionKind,
+    input.assertionId,
+    input.source,
+    input.confidence ?? null,
+    now,
+    now,
+  );
+  recordAccountabilityConceptEvent(
+    db,
+    {
+      conceptId: input.conceptId,
+      eventType: input.source === "manual" ? "assign_assertion" : input.source === "semantic_auto" ? "semantic_auto_assign_assertion" : "auto_assign_assertion",
+      payload: { assertionKind: input.assertionKind, assertionId: input.assertionId, confidence: input.confidence ?? null, ...(input.eventPayload ?? {}) },
+    },
+    now,
+  );
+  const row = db
+    .prepare(
+      `SELECT assignment_id as assignmentId,
+              concept_id as conceptId,
+              assertion_kind as assertionKind,
+              assertion_id as assertionId,
+              source,
+              confidence,
+              created_at as createdAt,
+              updated_at as updatedAt
+       FROM accountability_concept_assignments
+       WHERE assertion_kind = ? AND assertion_id = ?;`,
+    )
+    .get(input.assertionKind, input.assertionId) as AccountabilityConceptAssignment | undefined;
+  if (!row) {
+    throw new Error("Concept assignment failed");
+  }
+  return { ...row, source: normalizeConceptAssignmentSource(row.source), confidence: row.confidence == null ? null : Number(row.confidence) };
+}
+
+export function clearAssertionConcept(
+  db: DatabaseSync,
+  assertionKind: "action" | "decision",
+  assertionId: string,
+  now = new Date().toISOString(),
+): { cleared: number } {
+  ensureAccountabilityConceptSchema(db);
+  const current = db
+    .prepare(`SELECT concept_id as conceptId FROM accountability_concept_assignments WHERE assertion_kind = ? AND assertion_id = ? LIMIT 1;`)
+    .get(assertionKind, assertionId) as { conceptId?: string } | undefined;
+  const result = db.prepare(`DELETE FROM accountability_concept_assignments WHERE assertion_kind = ? AND assertion_id = ?;`).run(assertionKind, assertionId);
+  if (current?.conceptId) {
+    recordAccountabilityConceptEvent(db, { conceptId: current.conceptId, eventType: "clear_assertion", payload: { assertionKind, assertionId } }, now);
+  }
+  return { cleared: Number(result.changes ?? 0) };
+}
+
+export function mergeAccountabilityConcepts(
+  db: DatabaseSync,
+  input: { fromConceptId: string; toConceptId: string },
+  now = new Date().toISOString(),
+): { movedAssignments: number; from: AccountabilityConcept; to: AccountabilityConcept } {
+  ensureAccountabilityConceptSchema(db);
+  if (!input.fromConceptId || !input.toConceptId || input.fromConceptId === input.toConceptId) {
+    throw new Error("Merge requires two different concept IDs");
+  }
+  const from = getAccountabilityConcept(db, input.fromConceptId);
+  const to = getAccountabilityConcept(db, input.toConceptId);
+  if (!from || !to) {
+    throw new Error("Merge concepts must both exist");
+  }
+  let movedAssignments = 0;
+  db.exec("BEGIN;");
+  try {
+    movedAssignments = Number(
+      db
+        .prepare(`UPDATE accountability_concept_assignments SET concept_id = ?, updated_at = ? WHERE concept_id = ?;`)
+        .run(input.toConceptId, now, input.fromConceptId).changes ?? 0,
+    );
+    db.prepare(`UPDATE accountability_concepts SET status = 'merged', merged_into_concept_id = ?, updated_at = ? WHERE concept_id = ?;`).run(
+      input.toConceptId,
+      now,
+      input.fromConceptId,
+    );
+    db.prepare(`UPDATE accountability_concepts SET updated_at = ? WHERE concept_id = ?;`).run(now, input.toConceptId);
+    recordAccountabilityConceptEvent(db, { conceptId: input.fromConceptId, eventType: "merge", payload: { into: input.toConceptId, movedAssignments } }, now);
+    recordAccountabilityConceptEvent(db, { conceptId: input.toConceptId, eventType: "merge_receive", payload: { from: input.fromConceptId, movedAssignments } }, now);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  return { movedAssignments, from: getAccountabilityConcept(db, input.fromConceptId)!, to: getAccountabilityConcept(db, input.toConceptId)! };
+}
+
+export function loadAccountabilityConceptMetadataForAssertions(
+  db: DatabaseSync,
+  assertions?: Array<{ kind: "action" | "decision"; assertionId: string | null | undefined }>,
+): Map<string, AccountabilityConceptMetadata> {
+  ensureAccountabilityConceptSchema(db);
+  const requested = assertions?.filter((assertion) => assertion.assertionId).map((assertion) => `${assertion.kind}:${assertion.assertionId}`) ?? [];
+  const requestedSet = new Set(requested);
+  const rows = db
+    .prepare(
+      `SELECT a.assertion_kind as assertionKind,
+              a.assertion_id as assertionId,
+              a.source as assignmentSource,
+              a.confidence as confidence,
+              COALESCE(survivor.concept_id, c.concept_id) as conceptId,
+              COALESCE(survivor.label, c.label) as label,
+              COALESCE(survivor.summary, c.summary) as summary,
+              COALESCE(survivor.status, c.status) as status
+       FROM accountability_concept_assignments a
+       JOIN accountability_concepts c ON c.concept_id = a.concept_id
+       LEFT JOIN accountability_concepts survivor ON c.status = 'merged' AND survivor.concept_id = c.merged_into_concept_id
+       ORDER BY a.assertion_kind, a.assertion_id;`,
+    )
+    .all() as Array<{
+      assertionKind: "action" | "decision";
+      assertionId: string;
+      assignmentSource: string | null;
+      confidence: number | null;
+      conceptId: string;
+      label: string;
+      summary: string | null;
+      status: string | null;
+    }>;
+  const metadata = new Map<string, AccountabilityConceptMetadata>();
+  for (const row of rows) {
+    const key = `${row.assertionKind}:${row.assertionId}`;
+    if (requestedSet.size > 0 && !requestedSet.has(key)) {
+      continue;
+    }
+    metadata.set(key, {
+      id: row.conceptId,
+      label: row.label,
+      summary: row.summary ?? "",
+      status: normalizeConceptStatus(row.status),
+      assignmentSource: normalizeConceptAssignmentSource(row.assignmentSource),
+      confidence: row.confidence == null ? null : Number(row.confidence),
+    });
+  }
+  return metadata;
+}
+
+export function splitAccountabilityConcept(
+  db: DatabaseSync,
+  input: { sourceConceptId: string; concepts: Array<{ label: string; summary?: string | null; assertionIds?: string[] }> },
+  now = new Date().toISOString(),
+): { created: AccountabilityConcept[]; reassigned: number } {
+  ensureAccountabilityConceptSchema(db);
+  if (!getAccountabilityConcept(db, input.sourceConceptId)) {
+    throw new Error("Source concept not found");
+  }
+  if (!input.concepts.length) {
+    throw new Error("Split requires at least one new concept");
+  }
+  const created: AccountabilityConcept[] = [];
+  let reassigned = 0;
+  db.exec("BEGIN;");
+  try {
+    for (const candidate of input.concepts) {
+      const concept = createAccountabilityConcept(db, { label: candidate.label, summary: candidate.summary ?? "" }, now);
+      created.push(concept);
+      for (const assertionId of candidate.assertionIds ?? []) {
+        const row = db
+          .prepare(`SELECT assertion_kind as assertionKind FROM accountability_concept_assignments WHERE concept_id = ? AND assertion_id = ? LIMIT 1;`)
+          .get(input.sourceConceptId, assertionId) as { assertionKind?: "action" | "decision" } | undefined;
+        if (!row?.assertionKind) {
+          continue;
+        }
+        assignAssertionConcept(db, { conceptId: concept.conceptId, assertionKind: row.assertionKind, assertionId, source: "manual", confidence: null }, now);
+        reassigned += 1;
+      }
+    }
+    if (reassigned === 0) {
+      throw new Error("Split requires at least one existing source assignment to move");
+    }
+    recordAccountabilityConceptEvent(db, { conceptId: input.sourceConceptId, eventType: "split", payload: { createdConceptIds: created.map((concept) => concept.conceptId), reassigned } }, now);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  return { created, reassigned };
+}
+
+export function ensureSemanticConceptProposalSchema(db: DatabaseSync): void {
+  ensureAccountabilityConceptSchema(db);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS semantic_concept_proposal_runs (
+      proposal_run_id TEXT PRIMARY KEY,
+      source_window_json TEXT NOT NULL,
+      index_version TEXT NOT NULL,
+      registry_snapshot_version TEXT NOT NULL,
+      prompt_version_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      imported_at TEXT NOT NULL,
+      diagnostics_json TEXT NOT NULL,
+      raw_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_concept_proposals (
+      proposal_id TEXT PRIMARY KEY,
+      proposal_run_id TEXT NOT NULL,
+      canonical_label_suggestion TEXT NOT NULL,
+      definition TEXT NOT NULL,
+      why_it_matters TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      registry_action TEXT NOT NULL,
+      existing_concept_id TEXT,
+      aliases_suggested_json TEXT NOT NULL,
+      linked_action_ids_json TEXT NOT NULL,
+      linked_decision_ids_json TEXT NOT NULL,
+      linked_evidence_window_ids_json TEXT NOT NULL,
+      review_status TEXT NOT NULL DEFAULT 'pending',
+      target_concept_id TEXT,
+      raw_json TEXT NOT NULL,
+      imported_at TEXT NOT NULL,
+      reviewed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_concept_proposal_reviews (
+      review_id TEXT PRIMARY KEY,
+      proposal_id TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      target_concept_id TEXT,
+      reviewer TEXT,
+      reasons_json TEXT NOT NULL,
+      aliases_accepted_json TEXT NOT NULL,
+      reviewed_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_concept_suppressions (
+      suppression_id TEXT PRIMARY KEY,
+      normalized_label TEXT NOT NULL UNIQUE,
+      proposal_id TEXT,
+      reason TEXT,
+      reviewer TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_semantic_concept_proposals_run ON semantic_concept_proposals (proposal_run_id, review_status, confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_concept_proposal_reviews_proposal ON semantic_concept_proposal_reviews (proposal_id, reviewed_at);
+    CREATE INDEX IF NOT EXISTS idx_semantic_concept_suppressions_label ON semantic_concept_suppressions (normalized_label);
+  `);
+}
+
+export function ensureSemanticRefreshRunSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS semantic_refresh_runs (
+      semantic_refresh_run_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      source TEXT,
+      source_document_id TEXT,
+      document_version_id TEXT,
+      ingestion_run_id TEXT,
+      index_version_id TEXT,
+      proposal_run_id TEXT,
+      proposals_imported INTEGER NOT NULL DEFAULT 0,
+      auto_applied INTEGER NOT NULL DEFAULT 0,
+      pending INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_status ON semantic_refresh_runs (status, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_ingestion ON semantic_refresh_runs (ingestion_run_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_source_document ON semantic_refresh_runs (source_document_id, started_at DESC);
+  `);
+}
+
+function normalizeSemanticRefreshRunStatus(value: string | null | undefined): SemanticRefreshRunStatus {
+  return value === "completed" || value === "failed" ? value : "running";
+}
+
+function semanticRefreshRunRow(row: {
+  semanticRefreshRunId: string;
+  status: string;
+  trigger: string;
+  source: string | null;
+  sourceDocumentId: string | null;
+  documentVersionId: string | null;
+  ingestionRunId: string | null;
+  indexVersionId: string | null;
+  proposalRunId: string | null;
+  proposalsImported: number | null;
+  autoApplied: number | null;
+  pending: number | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}): SemanticRefreshRunRecord {
+  return {
+    ...row,
+    status: normalizeSemanticRefreshRunStatus(row.status),
+    proposalsImported: Number(row.proposalsImported ?? 0),
+    autoApplied: Number(row.autoApplied ?? 0),
+    pending: Number(row.pending ?? 0),
+  };
+}
+
+export function startSemanticRefreshRun(
+  db: DatabaseSync,
+  input: { trigger: string; source?: string | null; sourceDocumentId?: string | null; documentVersionId?: string | null; ingestionRunId?: string | null; semanticRefreshRunId?: string | null },
+  now = new Date().toISOString(),
+): SemanticRefreshRunRecord {
+  ensureSemanticRefreshRunSchema(db);
+  const semanticRefreshRunId = input.semanticRefreshRunId?.trim() || `semantic_refresh_run_${randomUUID()}`;
+  db.prepare(`
+    INSERT INTO semantic_refresh_runs (
+      semantic_refresh_run_id, status, trigger, source, source_document_id, document_version_id,
+      ingestion_run_id, index_version_id, proposal_run_id, proposals_imported, auto_applied,
+      pending, error, started_at, finished_at
+    ) VALUES (?, 'running', ?, ?, ?, ?, ?, NULL, NULL, 0, 0, 0, NULL, ?, NULL);
+  `).run(
+    semanticRefreshRunId,
+    input.trigger || "unknown",
+    input.source ?? null,
+    input.sourceDocumentId ?? null,
+    input.documentVersionId ?? null,
+    input.ingestionRunId ?? null,
+    now,
+  );
+  return getSemanticRefreshRun(db, semanticRefreshRunId)!;
+}
+
+export function finishSemanticRefreshRun(
+  db: DatabaseSync,
+  input: {
+    semanticRefreshRunId: string;
+    status: Exclude<SemanticRefreshRunStatus, "running">;
+    indexVersionId?: string | null;
+    proposalRunId?: string | null;
+    proposalsImported?: number | null;
+    autoApplied?: number | null;
+    pending?: number | null;
+    error?: string | null;
+  },
+  now = new Date().toISOString(),
+): SemanticRefreshRunRecord {
+  ensureSemanticRefreshRunSchema(db);
+  db.prepare(`
+    UPDATE semantic_refresh_runs
+    SET status = ?,
+        index_version_id = COALESCE(?, index_version_id),
+        proposal_run_id = COALESCE(?, proposal_run_id),
+        proposals_imported = COALESCE(?, proposals_imported),
+        auto_applied = COALESCE(?, auto_applied),
+        pending = COALESCE(?, pending),
+        error = ?,
+        finished_at = ?
+    WHERE semantic_refresh_run_id = ?;
+  `).run(
+    input.status,
+    input.indexVersionId ?? null,
+    input.proposalRunId ?? null,
+    input.proposalsImported ?? null,
+    input.autoApplied ?? null,
+    input.pending ?? null,
+    input.error ?? null,
+    now,
+    input.semanticRefreshRunId,
+  );
+  const run = getSemanticRefreshRun(db, input.semanticRefreshRunId);
+  if (!run) throw new Error("Semantic refresh run not found");
+  return run;
+}
+
+export function getSemanticRefreshRun(db: DatabaseSync, semanticRefreshRunId: string): SemanticRefreshRunRecord | null {
+  ensureSemanticRefreshRunSchema(db);
+  const row = db.prepare(`
+    SELECT semantic_refresh_run_id as semanticRefreshRunId,
+           status,
+           trigger,
+           source,
+           source_document_id as sourceDocumentId,
+           document_version_id as documentVersionId,
+           ingestion_run_id as ingestionRunId,
+           index_version_id as indexVersionId,
+           proposal_run_id as proposalRunId,
+           proposals_imported as proposalsImported,
+           auto_applied as autoApplied,
+           pending,
+           error,
+           started_at as startedAt,
+           finished_at as finishedAt
+    FROM semantic_refresh_runs
+    WHERE semantic_refresh_run_id = ?
+    LIMIT 1;
+  `).get(semanticRefreshRunId) as Parameters<typeof semanticRefreshRunRow>[0] | undefined;
+  return row ? semanticRefreshRunRow(row) : null;
+}
+
+export function listSemanticRefreshRuns(db: DatabaseSync, limit = 50): SemanticRefreshRunRecord[] {
+  ensureSemanticRefreshRunSchema(db);
+  const rows = db.prepare(`
+    SELECT semantic_refresh_run_id as semanticRefreshRunId,
+           status,
+           trigger,
+           source,
+           source_document_id as sourceDocumentId,
+           document_version_id as documentVersionId,
+           ingestion_run_id as ingestionRunId,
+           index_version_id as indexVersionId,
+           proposal_run_id as proposalRunId,
+           proposals_imported as proposalsImported,
+           auto_applied as autoApplied,
+           pending,
+           error,
+           started_at as startedAt,
+           finished_at as finishedAt
+    FROM semantic_refresh_runs
+    ORDER BY started_at DESC
+    LIMIT ?;
+  `).all(Math.max(1, Math.min(500, Math.floor(limit)))) as Array<Parameters<typeof semanticRefreshRunRow>[0]>;
+  return rows.map(semanticRefreshRunRow);
+}
+
+export function updateMeetingIngestionSemanticResult(
+  db: DatabaseSync,
+  ingestionRunId: string | null | undefined,
+  input: MeetingIngestionSemanticResultInput,
+): { updated: number } {
+  if (!ingestionRunId) return { updated: 0 };
+  ensureSemanticRefreshRunSchema(db);
+  const result = db.prepare(`
+    UPDATE meeting_ingestion_runs
+    SET semantic_status = ?,
+        semantic_message = ?,
+        semantic_proposal_run_id = ?,
+        semantic_auto_applied_count = ?,
+        semantic_finished_at = ?
+    WHERE ingestion_run_id = ?;
+  `).run(
+    input.status,
+    input.message ?? null,
+    input.proposalRunId ?? null,
+    input.autoAppliedCount ?? null,
+    input.finishedAt ?? new Date().toISOString(),
+    ingestionRunId,
+  );
+  return { updated: Number(result.changes ?? 0) };
+}
+
+function parseJsonArray(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeSemanticProposalLabel(value: string | null | undefined) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
+}
+
+function semanticProposalSuppressionExists(db: DatabaseSync, label: string) {
+  const normalizedLabel = normalizeSemanticProposalLabel(label);
+  if (!normalizedLabel) return false;
+  return Boolean(
+    db.prepare(`SELECT 1 FROM semantic_concept_suppressions WHERE normalized_label = ? LIMIT 1;`).get(normalizedLabel),
+  );
+}
+
+type SemanticConceptProposalStoredRecord = Omit<SemanticConceptProposalRecord, "applyReady" | "missingTargets">;
+
+function semanticProposalRow(row: {
+  proposalId: string;
+  proposalRunId: string;
+  canonicalLabelSuggestion: string;
+  definition: string;
+  whyItMatters: string;
+  scope: string;
+  confidence: number;
+  registryAction: string;
+  existingConceptId: string | null;
+  aliasesSuggestedJson: string;
+  linkedActionIdsJson: string;
+  linkedDecisionIdsJson: string;
+  linkedEvidenceWindowIdsJson: string;
+  reviewStatus: string;
+  targetConceptId: string | null;
+  rawJson: string;
+  importedAt: string;
+  reviewedAt: string | null;
+}): SemanticConceptProposalStoredRecord {
+  return {
+    proposalId: row.proposalId,
+    proposalRunId: row.proposalRunId,
+    canonicalLabelSuggestion: row.canonicalLabelSuggestion,
+    definition: row.definition,
+    whyItMatters: row.whyItMatters,
+    scope: row.scope,
+    confidence: Number(row.confidence),
+    registryAction: row.registryAction,
+    existingConceptId: row.existingConceptId ?? null,
+    aliasesSuggested: parseJsonArray(row.aliasesSuggestedJson),
+    linkedActionIds: parseJsonArray(row.linkedActionIdsJson),
+    linkedDecisionIds: parseJsonArray(row.linkedDecisionIdsJson),
+    linkedEvidenceWindowIds: parseJsonArray(row.linkedEvidenceWindowIdsJson),
+    reviewStatus: row.reviewStatus === "accepted" || row.reviewStatus === "rejected" || row.reviewStatus === "suppressed" || row.reviewStatus === "merged" || row.reviewStatus === "alias_added" ? row.reviewStatus : "pending",
+    targetConceptId: row.targetConceptId ?? null,
+    rawJson: row.rawJson,
+    importedAt: row.importedAt,
+    reviewedAt: row.reviewedAt ?? null,
+  };
+}
+
+function loadSemanticProposal(db: DatabaseSync, proposalId: string): SemanticConceptProposalRecord | null {
+  ensureSemanticConceptProposalSchema(db);
+  const row = db.prepare(`
+    SELECT proposal_id as proposalId,
+           proposal_run_id as proposalRunId,
+           canonical_label_suggestion as canonicalLabelSuggestion,
+           definition,
+           why_it_matters as whyItMatters,
+           scope,
+           confidence,
+           registry_action as registryAction,
+           existing_concept_id as existingConceptId,
+           aliases_suggested_json as aliasesSuggestedJson,
+           linked_action_ids_json as linkedActionIdsJson,
+           linked_decision_ids_json as linkedDecisionIdsJson,
+           linked_evidence_window_ids_json as linkedEvidenceWindowIdsJson,
+           review_status as reviewStatus,
+           target_concept_id as targetConceptId,
+           raw_json as rawJson,
+           imported_at as importedAt,
+           reviewed_at as reviewedAt
+    FROM semantic_concept_proposals
+    WHERE proposal_id = ?
+    LIMIT 1;
+  `).get(proposalId) as Parameters<typeof semanticProposalRow>[0] | undefined;
+  return row ? withSemanticProposalTargetResolution(db, semanticProposalRow(row)) : null;
+}
+
+function normalizeSemanticAssertionMatchText(text: string | null | undefined) {
+  return String(text ?? "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/[`*_~[\]().,!?:;'"/\\]+/gu, " ")
+    .replace(/\b(the|a|an|to|and|or|of|for|with|on|in|at|by|now)\b/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function semanticAssertionTable(kind: "action" | "decision") {
+  return kind === "action"
+    ? { table: "action_assertions", idColumn: "action_assertion_id", ownerColumn: "raw_assignee" }
+    : { table: "decision_assertions", idColumn: "decision_assertion_id", ownerColumn: "raw_owner" };
+}
+
+function semanticAssertionExists(db: DatabaseSync, kind: "action" | "decision", assertionId: string) {
+  const table = semanticAssertionTable(kind);
+  return Boolean(db.prepare(`SELECT 1 FROM ${table.table} WHERE ${table.idColumn} = ? LIMIT 1;`).get(assertionId));
+}
+
+function semanticSourceDocumentVersionIds(db: DatabaseSync, sourceRef: SemanticAssertionCandidateResolutionInput["sourceRef"]): string[] {
+  if (!sourceRef) return [];
+  const versionIds = new Set<string>();
+  const canonicalSourcePath = sourceRef.canonicalSourcePath?.trim();
+  if (canonicalSourcePath) {
+    const rows = db.prepare(`
+      SELECT dv.document_version_id as documentVersionId
+      FROM source_documents sd
+      JOIN document_versions dv ON dv.source_document_id = sd.source_document_id
+      WHERE sd.canonical_source_path = ? OR sd.absolute_path = ?
+      ORDER BY dv.captured_at DESC;
+    `).all(canonicalSourcePath, canonicalSourcePath) as Array<{ documentVersionId?: string }>;
+    for (const row of rows) if (row.documentVersionId) versionIds.add(row.documentVersionId);
+  }
+  const contentHash = sourceRef.contentHash?.trim();
+  if (contentHash) {
+    const rows = db.prepare(`SELECT document_version_id as documentVersionId FROM document_versions WHERE content_hash = ? ORDER BY captured_at DESC;`).all(contentHash) as Array<{ documentVersionId?: string }>;
+    for (const row of rows) if (row.documentVersionId) versionIds.add(row.documentVersionId);
+  }
+  const recordingId = sourceRef.recordingId?.trim();
+  if (recordingId) {
+    const rows = db.prepare(`
+      SELECT current_document_version_id as documentVersionId
+      FROM meetings
+      WHERE recording_id = ?
+      ORDER BY last_ingested_at DESC;
+    `).all(recordingId) as Array<{ documentVersionId?: string }>;
+    for (const row of rows) if (row.documentVersionId) versionIds.add(row.documentVersionId);
+  }
+  return [...versionIds];
+}
+
+function resolveSemanticCandidateByText(
+  db: DatabaseSync,
+  input: SemanticAssertionCandidateResolutionInput & { kind: "action" | "decision" },
+  documentVersionIds: string[],
+): Omit<SemanticAssertionCandidateResolution, "candidateId" | "kind"> {
+  const normalized = normalizeSemanticAssertionMatchText(input.normalizedText || input.text);
+  if (!normalized) return { assertionId: null, method: "unresolved", ambiguous: false };
+  const table = semanticAssertionTable(input.kind);
+  const rows = documentVersionIds.length > 0
+    ? db.prepare(`
+        SELECT ${table.idColumn} as assertionId, summary, label, raw_json as rawJson
+        FROM ${table.table}
+        WHERE document_version_id IN (${documentVersionIds.map(() => "?").join(",")})
+        ORDER BY sequence ASC;
+      `).all(...documentVersionIds) as Array<{ assertionId?: string; summary?: string | null; label?: string | null; rawJson?: string | null }>
+    : [];
+  const sourceMatches = rows.filter((row) =>
+    normalizeSemanticAssertionMatchText(row.summary) === normalized ||
+    normalizeSemanticAssertionMatchText(row.label) === normalized ||
+    normalizeSemanticAssertionMatchText(row.rawJson) === normalized
+  );
+  if (sourceMatches.length === 1 && sourceMatches[0].assertionId) return { assertionId: sourceMatches[0].assertionId, method: "source_text", ambiguous: false };
+  if (sourceMatches.length > 1) return { assertionId: null, method: "unresolved", ambiguous: true };
+
+  const globalRows = db.prepare(`
+    SELECT ${table.idColumn} as assertionId, summary, label
+    FROM ${table.table}
+    ORDER BY meeting_id ASC, sequence ASC;
+  `).all() as Array<{ assertionId?: string; summary?: string | null; label?: string | null }>;
+  const globalMatches = globalRows.filter((row) =>
+    normalizeSemanticAssertionMatchText(row.summary) === normalized ||
+    normalizeSemanticAssertionMatchText(row.label) === normalized
+  );
+  if (globalMatches.length === 1 && globalMatches[0].assertionId) return { assertionId: globalMatches[0].assertionId, method: "global_text", ambiguous: false };
+  return { assertionId: null, method: "unresolved", ambiguous: globalMatches.length > 1 };
+}
+
+export function resolveSemanticAssertionCandidateTargets(
+  db: DatabaseSync,
+  candidates: SemanticAssertionCandidateResolutionInput[],
+): SemanticAssertionCandidateResolution[] {
+  return candidates
+    .map((candidate) => {
+      const kind = candidate.kind === "decision" ? "decision" : candidate.kind === "action" ? "action" : null;
+      if (!kind) return null;
+      const candidateId = candidate.candidateId.trim();
+      if (!candidateId) return null;
+      const missionControlId = candidate.sourceRef?.missionControlId?.trim();
+      if (missionControlId && semanticAssertionExists(db, kind, missionControlId)) {
+        return { candidateId, kind, assertionId: missionControlId, method: "mission_control_id", ambiguous: false } satisfies SemanticAssertionCandidateResolution;
+      }
+      if (semanticAssertionExists(db, kind, candidateId)) {
+        return { candidateId, kind, assertionId: candidateId, method: "already_mc_id", ambiguous: false } satisfies SemanticAssertionCandidateResolution;
+      }
+      const textMatch = resolveSemanticCandidateByText(db, { ...candidate, kind }, semanticSourceDocumentVersionIds(db, candidate.sourceRef));
+      return { candidateId, kind, ...textMatch } satisfies SemanticAssertionCandidateResolution;
+    })
+    .filter((resolution): resolution is SemanticAssertionCandidateResolution => Boolean(resolution));
+}
+
+export function resolveSemanticConceptProposalRunAssertionTargets(
+  db: DatabaseSync,
+  run: Record<string, unknown>,
+  candidates: SemanticAssertionCandidateResolutionInput[],
+): SemanticProposalRunResolutionResult {
+  const resolutions = resolveSemanticAssertionCandidateTargets(db, candidates);
+  const actionMap = new Map(resolutions.filter((resolution) => resolution.kind === "action" && resolution.assertionId).map((resolution) => [resolution.candidateId, resolution.assertionId as string]));
+  const decisionMap = new Map(resolutions.filter((resolution) => resolution.kind === "decision" && resolution.assertionId).map((resolution) => [resolution.candidateId, resolution.assertionId as string]));
+  const unresolved = resolutions.filter((resolution) => !resolution.assertionId).map((resolution) => `${resolution.kind}:${resolution.candidateId}`);
+  const proposals = Array.isArray(run.proposals) ? run.proposals as Array<Record<string, unknown>> : [];
+  const resolvedProposals = proposals.map((proposal) => {
+    const linkedActionIds = (Array.isArray(proposal.linkedActionIds) ? proposal.linkedActionIds.map(String) : []).map((id) => actionMap.get(id) ?? id);
+    const linkedDecisionIds = (Array.isArray(proposal.linkedDecisionIds) ? proposal.linkedDecisionIds.map(String) : []).map((id) => decisionMap.get(id) ?? id);
+    const proposalUnresolved = [
+      ...linkedActionIds.filter((id) => !semanticAssertionExists(db, "action", id)).map((id) => `action:${id}`),
+      ...linkedDecisionIds.filter((id) => !semanticAssertionExists(db, "decision", id)).map((id) => `decision:${id}`),
+    ];
+    return {
+      ...proposal,
+      linkedActionIds: [...new Set(linkedActionIds)],
+      linkedDecisionIds: [...new Set(linkedDecisionIds)],
+      missionControlResolution: {
+        applyReady: proposalUnresolved.length === 0,
+        missingTargets: proposalUnresolved,
+      },
+    };
+  });
+  return { proposalRun: { ...run, proposals: resolvedProposals }, resolutions, unresolved };
+}
+
+function parseSemanticProposalImportConfidence(value: unknown): { ok: true; value: number; diagnostics: string[] } | { ok: false; diagnostics: string[] } {
+  if (typeof value !== "number" || !Number.isFinite(value)) return { ok: false, diagnostics: ["confidence missing or non-finite"] };
+  if (value <= 0) return { ok: false, diagnostics: ["confidence must be > 0"] };
+  if (value > 1 && value <= 100) return { ok: true, value: value / 100, diagnostics: ["confidence normalized from percent"] };
+  if (value > 1) return { ok: false, diagnostics: ["confidence must be <= 1 or a percent <= 100"] };
+  return { ok: true, value, diagnostics: [] };
+}
+
+export function importSemanticConceptProposalRun(db: DatabaseSync, run: Record<string, unknown>, now = new Date().toISOString()): SemanticProposalImportResult {
+  ensureSemanticConceptProposalSchema(db);
+  const proposalRunId = String(run.proposalRunId || "").trim();
+  const proposals = Array.isArray(run.proposals) ? run.proposals as Array<Record<string, unknown>> : [];
+  if (!proposalRunId) throw new Error("Semantic proposal run requires proposalRunId");
+  const diagnostics: string[] = [];
+  let proposalsSkipped = 0;
+  const importableProposals: Array<{ proposal: Record<string, unknown>; confidence: number }> = [];
+  for (const proposal of proposals) {
+    const proposalId = String(proposal.proposalId || "").trim();
+    if (!proposalId) {
+      diagnostics.push("skipped semantic proposal with missing proposalId");
+      proposalsSkipped += 1;
+      continue;
+    }
+    const confidence = parseSemanticProposalImportConfidence(proposal.confidence);
+    if (!confidence.ok) {
+      diagnostics.push(`skipped semantic proposal ${proposalId}: ${confidence.diagnostics.join(", ")}`);
+      proposalsSkipped += 1;
+      continue;
+    }
+    diagnostics.push(...confidence.diagnostics.map((diagnostic) => `semantic proposal ${proposalId}: ${diagnostic}`));
+    importableProposals.push({ proposal, confidence: confidence.value });
+  }
+  const runDiagnostics = [...(Array.isArray(run.diagnostics) ? run.diagnostics.map(String) : []), ...diagnostics];
+  const runForStorage = diagnostics.length > 0
+    ? { ...run, diagnostics: runDiagnostics, importDiagnostics: { proposalsSkipped, diagnostics } }
+    : run;
+  db.exec("BEGIN;");
+  try {
+    db.prepare(`
+      INSERT INTO semantic_concept_proposal_runs (
+        proposal_run_id, source_window_json, index_version, registry_snapshot_version, prompt_version_json, generated_at, imported_at, diagnostics_json, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(proposal_run_id) DO UPDATE SET
+        source_window_json = excluded.source_window_json,
+        index_version = excluded.index_version,
+        registry_snapshot_version = excluded.registry_snapshot_version,
+        prompt_version_json = excluded.prompt_version_json,
+        generated_at = excluded.generated_at,
+        imported_at = excluded.imported_at,
+        diagnostics_json = excluded.diagnostics_json,
+        raw_json = excluded.raw_json;
+    `).run(
+      proposalRunId,
+      JSON.stringify(run.sourceWindow ?? {}),
+      String(run.indexVersion ?? "unknown"),
+      String(run.registrySnapshotVersion ?? "unknown"),
+      JSON.stringify(run.promptVersion ?? {}),
+      String(run.generatedAt ?? now),
+      now,
+      JSON.stringify(runDiagnostics),
+      JSON.stringify(runForStorage),
+    );
+    const insertProposal = db.prepare(`
+      INSERT INTO semantic_concept_proposals (
+        proposal_id, proposal_run_id, canonical_label_suggestion, definition, why_it_matters, scope, confidence,
+        registry_action, existing_concept_id, aliases_suggested_json, linked_action_ids_json,
+        linked_decision_ids_json, linked_evidence_window_ids_json, review_status, target_concept_id, raw_json, imported_at, reviewed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT review_status FROM semantic_concept_proposals WHERE proposal_id = ?), ?), COALESCE((SELECT target_concept_id FROM semantic_concept_proposals WHERE proposal_id = ?), NULL), ?, ?, COALESCE((SELECT reviewed_at FROM semantic_concept_proposals WHERE proposal_id = ?), NULL))
+      ON CONFLICT(proposal_id) DO UPDATE SET
+        proposal_run_id = excluded.proposal_run_id,
+        canonical_label_suggestion = excluded.canonical_label_suggestion,
+        definition = excluded.definition,
+        why_it_matters = excluded.why_it_matters,
+        scope = excluded.scope,
+        confidence = excluded.confidence,
+        registry_action = excluded.registry_action,
+        existing_concept_id = excluded.existing_concept_id,
+        aliases_suggested_json = excluded.aliases_suggested_json,
+        linked_action_ids_json = excluded.linked_action_ids_json,
+        linked_decision_ids_json = excluded.linked_decision_ids_json,
+        linked_evidence_window_ids_json = excluded.linked_evidence_window_ids_json,
+        raw_json = excluded.raw_json,
+        imported_at = excluded.imported_at;
+    `);
+    for (const { proposal, confidence } of importableProposals) {
+      const proposalId = String(proposal.proposalId || "").trim();
+      const label = String(proposal.canonicalLabelSuggestion ?? "");
+      const defaultReviewStatus = semanticProposalSuppressionExists(db, label) ? "suppressed" : "pending";
+      insertProposal.run(
+        proposalId,
+        proposalRunId,
+        label,
+        String(proposal.definition ?? ""),
+        String(proposal.whyItMatters ?? ""),
+        String(proposal.scope ?? ""),
+        confidence,
+        String(proposal.registryAction ?? "propose_new"),
+        typeof proposal.existingConceptId === "string" ? proposal.existingConceptId : null,
+        JSON.stringify(Array.isArray(proposal.aliasesSuggested) ? proposal.aliasesSuggested : []),
+        JSON.stringify(Array.isArray(proposal.linkedActionIds) ? proposal.linkedActionIds : []),
+        JSON.stringify(Array.isArray(proposal.linkedDecisionIds) ? proposal.linkedDecisionIds : []),
+        JSON.stringify(Array.isArray(proposal.linkedEvidenceWindowIds) ? proposal.linkedEvidenceWindowIds : []),
+        proposalId,
+        defaultReviewStatus,
+        proposalId,
+        JSON.stringify(proposal),
+        now,
+        proposalId,
+      );
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  return { proposalRunId, proposalsImported: importableProposals.length, evidencePacketsImported: Array.isArray(run.evidencePackets) ? run.evidencePackets.length : 0, proposalsSkipped, diagnostics };
+}
+
+type SemanticConceptProposalListOptions = { reviewStatus?: "pending" | "all" };
+
+export function listSemanticConceptProposalRuns(db: DatabaseSync, options: SemanticConceptProposalListOptions = {}): SemanticConceptProposalRunRecord[] {
+  ensureSemanticConceptProposalSchema(db);
+  const rows = db.prepare(`
+    SELECT proposal_run_id as proposalRunId,
+           source_window_json as sourceWindowJson,
+           index_version as indexVersion,
+           registry_snapshot_version as registrySnapshotVersion,
+           prompt_version_json as promptVersionJson,
+           generated_at as generatedAt,
+           imported_at as importedAt,
+           diagnostics_json as diagnosticsJson,
+           raw_json as rawJson
+    FROM semantic_concept_proposal_runs
+    ORDER BY generated_at DESC, imported_at DESC;
+  `).all() as Array<Omit<SemanticConceptProposalRunRecord, "proposals">>;
+  return rows.map((row) => ({ ...row, proposals: listSemanticConceptProposals(db, row.proposalRunId, options) }));
+}
+
+export function listSemanticConceptProposals(db: DatabaseSync, proposalRunId?: string, options: SemanticConceptProposalListOptions = {}): SemanticConceptProposalRecord[] {
+  ensureSemanticConceptProposalSchema(db);
+  const where: string[] = [];
+  const params: string[] = [];
+  if (proposalRunId) {
+    where.push("proposal_run_id = ?");
+    params.push(proposalRunId);
+  }
+  if (options.reviewStatus === "pending") {
+    where.push("review_status = ?");
+    params.push("pending");
+  }
+  const sql = `
+    SELECT proposal_id as proposalId,
+           proposal_run_id as proposalRunId,
+           canonical_label_suggestion as canonicalLabelSuggestion,
+           definition,
+           why_it_matters as whyItMatters,
+           scope,
+           confidence,
+           registry_action as registryAction,
+           existing_concept_id as existingConceptId,
+           aliases_suggested_json as aliasesSuggestedJson,
+           linked_action_ids_json as linkedActionIdsJson,
+           linked_decision_ids_json as linkedDecisionIdsJson,
+           linked_evidence_window_ids_json as linkedEvidenceWindowIdsJson,
+           review_status as reviewStatus,
+           target_concept_id as targetConceptId,
+           raw_json as rawJson,
+           imported_at as importedAt,
+           reviewed_at as reviewedAt
+    FROM semantic_concept_proposals
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY confidence DESC, canonical_label_suggestion;
+  `;
+  const rows = db.prepare(sql).all(...params) as Array<Parameters<typeof semanticProposalRow>[0]>;
+  return rows.map((row) => withSemanticProposalTargetResolution(db, semanticProposalRow(row)));
+}
+
+export function getSemanticConceptProposalRun(db: DatabaseSync, proposalRunId: string): SemanticConceptProposalRunRecord | null {
+  ensureSemanticConceptProposalSchema(db);
+  const row = db.prepare(`
+    SELECT proposal_run_id as proposalRunId,
+           source_window_json as sourceWindowJson,
+           index_version as indexVersion,
+           registry_snapshot_version as registrySnapshotVersion,
+           prompt_version_json as promptVersionJson,
+           generated_at as generatedAt,
+           imported_at as importedAt,
+           diagnostics_json as diagnosticsJson,
+           raw_json as rawJson
+    FROM semantic_concept_proposal_runs
+    WHERE proposal_run_id = ?
+    LIMIT 1;
+  `).get(proposalRunId) as Omit<SemanticConceptProposalRunRecord, "proposals"> | undefined;
+  return row ? { ...row, proposals: listSemanticConceptProposals(db, proposalRunId) } : null;
+}
+
+function missingSemanticProposalAssertionTargets(db: DatabaseSync, proposal: SemanticConceptProposalRecord): string[] {
+  const missing: string[] = [];
+  const actionExists = db.prepare(`SELECT 1 FROM action_assertions WHERE action_assertion_id = ? LIMIT 1;`);
+  const decisionExists = db.prepare(`SELECT 1 FROM decision_assertions WHERE decision_assertion_id = ? LIMIT 1;`);
+  for (const actionId of proposal.linkedActionIds) {
+    if (!actionExists.get(actionId)) missing.push(`action:${actionId}`);
+  }
+  for (const decisionId of proposal.linkedDecisionIds) {
+    if (!decisionExists.get(decisionId)) missing.push(`decision:${decisionId}`);
+  }
+  return missing;
+}
+
+export function semanticConceptProposalTargetResolution(db: DatabaseSync, proposal: SemanticConceptProposalRecord): SemanticProposalTargetResolution {
+  const missingTargets = missingSemanticProposalAssertionTargets(db, proposal);
+  return { proposalId: proposal.proposalId, applyReady: missingTargets.length === 0, missingTargets };
+}
+
+function withSemanticProposalTargetResolution(db: DatabaseSync, proposal: SemanticConceptProposalStoredRecord): SemanticConceptProposalRecord {
+  const targetResolution = semanticConceptProposalTargetResolution(db, proposal as SemanticConceptProposalRecord);
+  return { ...proposal, applyReady: targetResolution.applyReady, missingTargets: targetResolution.missingTargets };
+}
+
+export function reviewSemanticConceptProposal(
+  db: DatabaseSync,
+  input: { proposalId: string; decision: "accept" | "reject" | "merge" | "add_alias"; targetConceptId?: string | null; reviewer?: string | null; reasons?: string[]; aliasesAccepted?: string[]; assignmentSource?: AccountabilityConceptAssignmentSource },
+  now = new Date().toISOString(),
+): SemanticProposalApplyResult {
+  ensureSemanticConceptProposalSchema(db);
+  const proposal = loadSemanticProposal(db, input.proposalId);
+  if (!proposal) throw new Error("Semantic proposal not found");
+  if (input.decision === "accept") {
+    const missingTargets = missingSemanticProposalAssertionTargets(db, proposal);
+    if (missingTargets.length > 0) {
+      throw new Error(`Semantic proposal linked assertions are not resolvable in Mission Control: ${missingTargets.join(", ")}`);
+    }
+  }
+  let concept: AccountabilityConcept | null = null;
+  let assignmentsCreatedOrUpdated = 0;
+  const reviewStatus = input.decision === "accept" ? "accepted" : input.decision === "merge" ? "merged" : input.decision === "add_alias" ? "alias_added" : "rejected";
+  db.exec("BEGIN;");
+  try {
+    if (input.decision === "accept") {
+      const assignmentSource = input.assignmentSource ?? "manual";
+      const semanticEventPayload = { proposalId: proposal.proposalId, proposalRunId: proposal.proposalRunId, reviewer: input.reviewer ?? null };
+      const conceptId = proposal.registryAction === "map_existing" || proposal.registryAction === "add_alias" ? proposal.existingConceptId : null;
+      concept = conceptId ? getAccountabilityConcept(db, conceptId) : null;
+      if (!concept) {
+        concept = createAccountabilityConcept(db, { label: proposal.canonicalLabelSuggestion, summary: proposal.definition }, now);
+      }
+      for (const actionId of proposal.linkedActionIds) {
+        assignAssertionConcept(db, { conceptId: concept.conceptId, assertionKind: "action", assertionId: actionId, source: assignmentSource, confidence: proposal.confidence, eventPayload: semanticEventPayload }, now);
+        assignmentsCreatedOrUpdated += 1;
+      }
+      for (const decisionId of proposal.linkedDecisionIds) {
+        assignAssertionConcept(db, { conceptId: concept.conceptId, assertionKind: "decision", assertionId: decisionId, source: assignmentSource, confidence: proposal.confidence, eventPayload: semanticEventPayload }, now);
+        assignmentsCreatedOrUpdated += 1;
+      }
+      recordAccountabilityConceptEvent(db, { conceptId: concept.conceptId, eventType: "semantic_proposal_accept", payload: { proposalId: proposal.proposalId, proposalRunId: proposal.proposalRunId, aliasesSuggested: proposal.aliasesSuggested, assignmentSource, reviewer: input.reviewer ?? null } }, now);
+    } else if (input.decision === "merge") {
+      const targetConceptId = input.targetConceptId?.trim() || proposal.existingConceptId;
+      if (!targetConceptId) throw new Error("targetConceptId is required for semantic merge");
+      concept = getAccountabilityConcept(db, targetConceptId);
+      if (!concept) throw new Error("Target concept not found");
+      recordAccountabilityConceptEvent(db, { conceptId: targetConceptId, eventType: "semantic_proposal_merge", payload: { proposalId: proposal.proposalId, proposalRunId: proposal.proposalRunId, label: proposal.canonicalLabelSuggestion } }, now);
+    } else if (input.decision === "add_alias") {
+      const targetConceptId = input.targetConceptId?.trim() || proposal.existingConceptId;
+      if (!targetConceptId) throw new Error("targetConceptId is required for add_alias");
+      concept = getAccountabilityConcept(db, targetConceptId);
+      if (!concept) throw new Error("Target concept not found");
+      recordAccountabilityConceptEvent(db, { conceptId: targetConceptId, eventType: "semantic_proposal_add_alias", payload: { proposalId: proposal.proposalId, aliasesAccepted: input.aliasesAccepted?.length ? input.aliasesAccepted : proposal.aliasesSuggested } }, now);
+    }
+    db.prepare(`UPDATE semantic_concept_proposals SET review_status = ?, target_concept_id = ?, reviewed_at = ? WHERE proposal_id = ?;`)
+      .run(reviewStatus, concept?.conceptId ?? input.targetConceptId ?? null, now, proposal.proposalId);
+    db.prepare(`
+      INSERT INTO semantic_concept_proposal_reviews (review_id, proposal_id, decision, target_concept_id, reviewer, reasons_json, aliases_accepted_json, reviewed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+    `).run(
+      stableId("semantic_concept_review", proposal.proposalId, input.decision, now),
+      proposal.proposalId,
+      input.decision,
+      concept?.conceptId ?? input.targetConceptId ?? null,
+      input.reviewer ?? null,
+      JSON.stringify(input.reasons ?? []),
+      JSON.stringify(input.aliasesAccepted ?? []),
+      now,
+    );
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  return { proposalId: proposal.proposalId, decision: input.decision, concept, assignmentsCreatedOrUpdated };
+}
+
+export function autoApplySafeSemanticConceptProposals(
+  db: DatabaseSync,
+  options: { proposalRunId?: string | null; minConfidence?: number; reviewer?: string | null } = {},
+  now = new Date().toISOString(),
+): SemanticAutoApplyResult {
+  ensureSemanticConceptProposalSchema(db);
+  const minConfidence = options.minConfidence ?? 0.8;
+  const proposals = listSemanticConceptProposals(db, options.proposalRunId ?? undefined, { reviewStatus: "pending" });
+  let applied = 0;
+  let skipped = 0;
+  const appliedProposalIds: string[] = [];
+  for (const proposal of proposals) {
+    const hasTargets = proposal.linkedActionIds.length + proposal.linkedDecisionIds.length > 0;
+    if (proposal.confidence < minConfidence || !proposal.applyReady || proposal.missingTargets.length > 0 || !hasTargets) {
+      skipped += 1;
+      continue;
+    }
+    reviewSemanticConceptProposal(
+      db,
+      {
+        proposalId: proposal.proposalId,
+        decision: "accept",
+        reviewer: options.reviewer ?? "semantic_auto",
+        reasons: [`auto-applied: confidence ${proposal.confidence} >= ${minConfidence} and all linked assertions resolved`],
+        assignmentSource: "semantic_auto",
+      },
+      now,
+    );
+    applied += 1;
+    appliedProposalIds.push(proposal.proposalId);
+  }
+  const pending = listSemanticConceptProposals(db, options.proposalRunId ?? undefined, { reviewStatus: "pending" }).length;
+  return { considered: proposals.length, applied, pending, skipped, appliedProposalIds };
+}
+
+export function suppressSemanticConceptProposal(
+  db: DatabaseSync,
+  input: { proposalId: string; reason?: string | null; reviewer?: string | null },
+  now = new Date().toISOString(),
+): SemanticSuppressionResult {
+  ensureSemanticConceptProposalSchema(db);
+  const proposal = loadSemanticProposal(db, input.proposalId);
+  if (!proposal) throw new Error("Semantic proposal not found");
+  const normalizedLabel = normalizeSemanticProposalLabel(proposal.canonicalLabelSuggestion);
+  if (!normalizedLabel) throw new Error("Semantic proposal label is required for suppression");
+  const suppressionId = stableId("semantic_concept_suppression", normalizedLabel);
+  db.exec("BEGIN;");
+  try {
+    db.prepare(`
+      INSERT INTO semantic_concept_suppressions (suppression_id, normalized_label, proposal_id, reason, reviewer, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(normalized_label) DO UPDATE SET
+        proposal_id = excluded.proposal_id,
+        reason = excluded.reason,
+        reviewer = excluded.reviewer,
+        created_at = excluded.created_at;
+    `).run(suppressionId, normalizedLabel, proposal.proposalId, input.reason ?? null, input.reviewer ?? null, now);
+    db.prepare(`UPDATE semantic_concept_proposals SET review_status = 'suppressed', reviewed_at = ? WHERE proposal_id = ?;`).run(now, proposal.proposalId);
+    db.prepare(`
+      INSERT INTO semantic_concept_proposal_reviews (review_id, proposal_id, decision, target_concept_id, reviewer, reasons_json, aliases_accepted_json, reviewed_at)
+      VALUES (?, ?, 'suppress', NULL, ?, ?, '[]', ?);
+    `).run(stableId("semantic_concept_review", proposal.proposalId, "suppress", now), proposal.proposalId, input.reviewer ?? null, JSON.stringify(input.reason ? [input.reason] : []), now);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+  return { proposalId: proposal.proposalId, suppressionId, suppressed: true };
+}
+
+export function listSemanticConceptSuppressions(db: DatabaseSync): SemanticConceptSuppressionRecord[] {
+  ensureSemanticConceptProposalSchema(db);
+  return db.prepare(`
+    SELECT suppression_id as suppressionId,
+           normalized_label as normalizedLabel,
+           proposal_id as proposalId,
+           reason,
+           reviewer,
+           created_at as createdAt
+    FROM semantic_concept_suppressions
+    ORDER BY created_at DESC, normalized_label ASC;
+  `).all() as SemanticConceptSuppressionRecord[];
+}
+
+export function deleteSemanticConceptProposal(db: DatabaseSync, proposalId: string): { proposalId: string; deleted: boolean } {
+  ensureSemanticConceptProposalSchema(db);
+  db.exec("BEGIN;");
+  try {
+    db.prepare(`DELETE FROM semantic_concept_proposal_reviews WHERE proposal_id = ?;`).run(proposalId);
+    const result = db.prepare(`DELETE FROM semantic_concept_proposals WHERE proposal_id = ?;`).run(proposalId);
+    db.exec("COMMIT;");
+    return { proposalId, deleted: Number(result.changes ?? 0) > 0 };
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
 }
 
 function resolveIdentityIdForRawValue(db: DatabaseSync, rawValue: string | null | undefined): string | null {
@@ -1685,6 +3169,36 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       UNIQUE(assertion_kind, assertion_id, identity_id, source)
     );
 
+    CREATE TABLE IF NOT EXISTS accountability_concepts (
+      concept_id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      merged_into_concept_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS accountability_concept_assignments (
+      assignment_id TEXT PRIMARY KEY,
+      concept_id TEXT NOT NULL,
+      assertion_kind TEXT NOT NULL,
+      assertion_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      confidence REAL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(assertion_kind, assertion_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS accountability_concept_events (
+      concept_event_id TEXT PRIMARY KEY,
+      concept_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS meeting_ingestion_runs (
       ingestion_run_id TEXT PRIMARY KEY,
       source_document_id TEXT,
@@ -1694,6 +3208,29 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
       message TEXT,
       document_version_id TEXT,
       extraction_run_id TEXT,
+      semantic_status TEXT,
+      semantic_message TEXT,
+      semantic_proposal_run_id TEXT,
+      semantic_auto_applied_count INTEGER,
+      semantic_finished_at TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_refresh_runs (
+      semantic_refresh_run_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      source TEXT,
+      source_document_id TEXT,
+      document_version_id TEXT,
+      ingestion_run_id TEXT,
+      index_version_id TEXT,
+      proposal_run_id TEXT,
+      proposals_imported INTEGER NOT NULL DEFAULT 0,
+      auto_applied INTEGER NOT NULL DEFAULT 0,
+      pending INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT
     );
@@ -1709,7 +3246,14 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_assertion_associations_assertion ON assertion_associations (assertion_kind, assertion_id);
     CREATE INDEX IF NOT EXISTS idx_assertion_associations_meeting_version ON assertion_associations (meeting_id, document_version_id);
     CREATE INDEX IF NOT EXISTS idx_assertion_associations_identity ON assertion_associations (identity_id);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concepts_status ON accountability_concepts (status, label);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_assignments_concept ON accountability_concept_assignments (concept_id);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_assignments_assertion ON accountability_concept_assignments (assertion_kind, assertion_id);
+    CREATE INDEX IF NOT EXISTS idx_accountability_concept_events_concept ON accountability_concept_events (concept_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_meeting_ingestion_runs_path ON meeting_ingestion_runs (canonical_source_path, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_status ON semantic_refresh_runs (status, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_ingestion ON semantic_refresh_runs (ingestion_run_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_source_document ON semantic_refresh_runs (source_document_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_identity_aliases_value ON identity_aliases (alias_value);
     CREATE INDEX IF NOT EXISTS idx_identity_aliases_identity ON identity_aliases (identity_id);
   `);
@@ -1722,6 +3266,11 @@ export function openMissionControlDb(filePath: string): DatabaseSync {
     "ALTER TABLE decision_assertions ADD COLUMN task_id TEXT;",
     "ALTER TABLE decision_assertions ADD COLUMN details_ref TEXT;",
     "ALTER TABLE identities ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy';",
+    "ALTER TABLE meeting_ingestion_runs ADD COLUMN semantic_status TEXT;",
+    "ALTER TABLE meeting_ingestion_runs ADD COLUMN semantic_message TEXT;",
+    "ALTER TABLE meeting_ingestion_runs ADD COLUMN semantic_proposal_run_id TEXT;",
+    "ALTER TABLE meeting_ingestion_runs ADD COLUMN semantic_auto_applied_count INTEGER;",
+    "ALTER TABLE meeting_ingestion_runs ADD COLUMN semantic_finished_at TEXT;",
   ]) {
     try {
       db.exec(statement);
@@ -1822,6 +3371,7 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
 
     return {
       status: "noop",
+      ingestionRunId,
       sourceDocumentId,
       meetingId,
       documentVersionId: existingVersion.documentVersionId,
@@ -1832,6 +3382,8 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
       decisionCount: input.decisions.length,
     };
   }
+
+  const ingestionRunId = stableId("ingestion_run", sourceDocumentId, input.contentHash, startedAt, "ingested");
 
   const upsertSourceDocument = db.prepare(`
     INSERT INTO source_documents (
@@ -2109,7 +3661,7 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
     deriveAssertionAssociationsForMeetingVersion(db, meetingId, documentVersionId, input.ingestedAt);
 
     insertIngestionRun.run(
-      stableId("ingestion_run", sourceDocumentId, input.contentHash, startedAt, "ingested"),
+      ingestionRunId,
       sourceDocumentId,
       input.canonicalSourcePath,
       input.contentHash,
@@ -2140,6 +3692,7 @@ export function ingestMeetingDocument(db: DatabaseSync, input: MeetingIngestionP
 
   return {
     status: "ingested",
+    ingestionRunId,
     sourceDocumentId,
     meetingId,
     documentVersionId,
@@ -2207,6 +3760,7 @@ export function acceptMeetingAssertions(db: DatabaseSync, items: MeetingAssertio
 }
 
 export function rejectMeetingAssertions(db: DatabaseSync, items: MeetingAssertionReviewItem[]): MeetingAssertionReviewResult {
+  ensureAccountabilityConceptSchema(db);
   const selectAction = db.prepare(`
     SELECT meeting_id as meetingId
     FROM action_assertions
@@ -2225,6 +3779,10 @@ export function rejectMeetingAssertions(db: DatabaseSync, items: MeetingAssertio
   `);
   const deleteAssociations = db.prepare(`
     DELETE FROM assertion_associations
+    WHERE assertion_kind = ? AND assertion_id = ?;
+  `);
+  const deleteConceptAssignment = db.prepare(`
+    DELETE FROM accountability_concept_assignments
     WHERE assertion_kind = ? AND assertion_id = ?;
   `);
   const deleteAction = db.prepare(`
@@ -2247,6 +3805,7 @@ export function rejectMeetingAssertions(db: DatabaseSync, items: MeetingAssertio
       }
       deleteEvidence.run(item.kind, item.assertionId);
       deleteAssociations.run(item.kind, item.assertionId);
+      deleteConceptAssignment.run(item.kind, item.assertionId);
       const result = item.kind === "action" ? deleteAction.run(item.assertionId) : deleteDecision.run(item.assertionId);
       if (Number(result.changes ?? 0) > 0) {
         rejected += Number(result.changes ?? 0);

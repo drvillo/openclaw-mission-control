@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { assert, test } from "vitest";
 import { buildMyntIndexFromState, previewMyntArchive, type MyntState } from "./mynt";
 import type { MeetingIndex, MeetingRecording } from "./meetings";
@@ -136,6 +137,52 @@ test("buildMyntIndexFromState ranks people by unarchived action and decision tot
   ]);
   assert.equal(mynt.people[0].decisions[0].assertionId, "assertion-decision-1");
   assert.equal(mynt.hiddenSelfCount, 1);
+});
+
+test("buildMyntIndexFromState attaches assigned concept metadata to assertions", () => {
+  const first = meeting({
+    actions: [
+      {
+        kind: "action",
+        assertionId: "assertion-action-concept",
+        reviewStatus: "needs_review",
+        label: "C1",
+        id: "action-concept",
+        status: "todo",
+        taskId: null,
+        detailsRef: null,
+        owner: null,
+        assignee: "Alice Example",
+        confidence: "high",
+        score: 7,
+        dueDate: null,
+        dueText: null,
+        summary: "Alice coordinates agency follow-up",
+        evidence: null,
+        evidenceTimestamps: [],
+        evidenceTargetTime: null,
+        associations: [],
+      },
+    ],
+  });
+  const concepts = new Map([
+    [
+      "action:assertion-action-concept",
+      {
+        id: "concept-agency",
+        label: "Investigation agency",
+        summary: "Recurring agency follow-up",
+        status: "active" as const,
+        assignmentSource: "manual" as const,
+        confidence: null,
+      },
+    ],
+  ]);
+
+  const mynt = buildMyntIndexFromState(index([first]), state(), undefined, concepts);
+
+  assert.equal(mynt.items[0].concept?.label, "Investigation agency");
+  assert.equal(mynt.items[0].concept?.assignmentSource, "manual");
 });
 
 test("buildMyntIndexFromState excludes archived item ids", () => {

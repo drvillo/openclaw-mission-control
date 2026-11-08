@@ -1,9 +1,18 @@
 "use client";
 
-import { startTransition, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AssertionCard, type AssertionReviewOperation } from "./assertion-card";
 import { AssertionListLane } from "./assertion-list-lane";
 import { KanbanBoard } from "./kanban-board";
+import { SearchControl } from "./search-control";
+import {
+  applyActionDoneToItems,
+  applyActionStatusToItems,
+  applyMyntReassignment,
+  applyReviewToItems,
+  useAssertionActions,
+} from "./use-assertion-actions";
+import { useUrlSearchQuery } from "./use-url-search-query";
 import {
   MY_ACCOUNTABILITY_ACTION_COLUMNS,
   groupAcceptedSelfAssignedActions,
@@ -12,8 +21,8 @@ import {
   pendingSelfAssignedActions,
   type MyAccountabilityActionStatus,
 } from "../lib/my-accountability";
-import { personForAssignee, postMeetingReview, type ReassignActionPayload } from "../lib/meeting-review-client";
 import type { MyntIndex, MyntItem } from "../lib/mynt";
+import { itemMatchesSearch } from "../lib/search";
 
 type MyAccountabilityViewProps = {
   index: MyntIndex;
@@ -24,49 +33,26 @@ type MyAccountabilityTab = "actions" | "decisions";
 export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
   const [items, setItems] = useState(index.items);
   const [message, setMessage] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
   const [activeTab, setActiveTab] = useState<MyAccountabilityTab>("actions");
+  const [search, setSearch] = useUrlSearchQuery();
+  const assertionActions = useAssertionActions();
 
-  const localIndex = useMemo(() => ({ ...index, items }), [index, items]);
+  const visibleItems = useMemo(() => items.filter((item) => itemMatchesSearch(item, search)), [items, search]);
+  const localIndex = useMemo(() => ({ ...index, items: visibleItems }), [index, visibleItems]);
   const reviewActions = useMemo(() => pendingSelfAssignedActions(localIndex), [localIndex]);
   const actionColumns = useMemo(() => groupAcceptedSelfAssignedActions(localIndex), [localIndex]);
   const acceptedActions = useMemo(() => actionColumns.flatMap((column) => column.items), [actionColumns]);
   const decisions = useMemo(() => partitionSelfAssignedDecisions(localIndex), [localIndex]);
   const selfIdentity = index.identities.find((identity) => identity.isSelf);
 
-  async function postJson(body: Record<string, unknown>) {
-    setPending(true);
-    setMessage(null);
-    try {
-      const payload = await postMeetingReview(body);
-      setMessage(payload.summary);
-      return payload;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return null;
-    } finally {
-      setPending(false);
-    }
-  }
-
   function reviewItem(operation: AssertionReviewOperation, item: MyntItem) {
     if (!item.assertionId) {
       setMessage("This item does not have a database assertion ID.");
       return;
     }
-    if (operation === "reject" && !window.confirm(`Reject and delete ${item.kind === "action" ? "action" : "decision"} from ${item.meetingTitle}?`)) {
-      return;
-    }
-    startTransition(async () => {
-      const payload = await postJson({ operation, items: [{ kind: item.kind, assertionId: item.assertionId }] });
-      if (!payload) {
-        return;
-      }
-      setItems((current) =>
-        operation === "accept"
-          ? current.map((entry) => (entry.assertionId === item.assertionId && entry.kind === item.kind ? { ...entry, reviewStatus: "accepted" } : entry))
-          : current.filter((entry) => !(entry.assertionId === item.assertionId && entry.kind === item.kind)),
-      );
+    setMessage(null);
+    void assertionActions.reviewItem(operation, item, {
+      onSuccess: (_payload, payloadItems) => setItems((current) => applyReviewToItems(current, operation, payloadItems)),
     });
   }
 
@@ -75,18 +61,9 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
       setMessage("This action does not have a database assertion ID.");
       return;
     }
-    startTransition(async () => {
-      const payload = await postJson({ operation: "mark_action_done", assertionId: item.assertionId });
-      if (!payload) {
-        return;
-      }
-      setItems((current) =>
-        current.map((entry) =>
-          entry.kind === "action" && entry.assertionId === item.assertionId
-            ? { ...entry, reviewStatus: "accepted", status: "done" }
-            : entry,
-        ),
-      );
+    setMessage(null);
+    void assertionActions.markActionDone(item, {
+      onSuccess: () => setItems((current) => applyActionDoneToItems(current, [item.assertionId as string])),
     });
   }
 
@@ -95,34 +72,29 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
       return;
     }
     const previousItems = items;
-    setItems((current) => current.map((entry) => (entry.kind === "action" && entry.assertionId === item.assertionId ? { ...entry, status } : entry)));
-    startTransition(async () => {
-      const payload = await postJson({ operation: "update_action_status", assertionId: item.assertionId, status });
-      if (!payload) {
-        setItems(previousItems);
-      }
+    setMessage(null);
+    void assertionActions.updateActionStatus(item, status, {
+      onOptimistic: () => setItems((current) => applyActionStatusToItems(current, item.assertionId as string, status)),
+      onRollback: () => setItems(previousItems),
     });
   }
 
   async function reassignAction(assertionId: string, assignee: string) {
-    const payload = await postJson({ operation: "reassign_action", assertionId, assignee });
-    const reassignPayload = payload?.payload as ReassignActionPayload | undefined;
-    if (reassignPayload?.reassigned !== 1 || !reassignPayload.assignee) {
-      return false;
-    }
-    setItems((current) =>
-      current.map((item) =>
-        item.kind === "action" && item.assertionId === assertionId
-          ? { ...item, person: personForAssignee(reassignPayload.assignee ?? assignee, index.identities) }
-          : item,
-      ),
-    );
-    return true;
+    setMessage(null);
+    return assertionActions.reassignAction(assertionId, assignee, {
+      onSuccess: (payload) => setItems((current) => applyMyntReassignment(current, assertionId, payload.assignee ?? assignee, index.identities)),
+    });
   }
 
   return (
     <div className="my-accountability-shell">
       <div className="mynt-toolbar">
+        <SearchControl
+          value={search}
+          onChange={setSearch}
+          placeholder="Search my actions and decisions"
+          resultSummary={`${reviewActions.length + acceptedActions.length + decisions.pending.length + decisions.accepted.length} visible`}
+        />
         <span className="muted">
           Self identity: {selfIdentity?.displayName ?? "Francesco Vivoli"}{selfIdentity?.email ? ` (${selfIdentity.email})` : ""}
         </span>
@@ -159,13 +131,14 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
               title="Review inbox"
               description="Self-assigned action assertions waiting for review."
               items={reviewActions}
-              pending={pending}
+              pending={false}
               assigneeIdentities={index.identities}
               emptyText="No self-assigned actions need review."
               className="my-accountability-review-lane"
               onReview={reviewItem}
               onReassign={reassignAction}
               onMarkDone={markActionDone}
+              getActionState={assertionActions.getActionState}
             />
           </section>
 
@@ -184,7 +157,7 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
               boardClassName="tasks-board my-accountability-board"
               countLabel={(count) => `${count} action${count === 1 ? "" : "s"}`}
               emptyText={(column) => `No actions in ${column.label.toLowerCase()}.`}
-              canDragItem={(item) => !pending && Boolean(item.assertionId)}
+              canDragItem={(item) => !assertionActions.getActionState(item).pending && Boolean(item.assertionId)}
               onMove={(assertionId, status) => {
                 const item = items.find((entry) => entry.kind === "action" && entry.assertionId === assertionId);
                 if (item) {
@@ -194,7 +167,8 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
               renderCard={(item) => (
                 <AssertionCard
                   item={item}
-                  pending={pending}
+                  pending={false}
+                  actionState={assertionActions.getActionState(item)}
                   assigneeIdentities={index.identities}
                   showActionWorkflow
                   onActionStatusChange={updateActionStatus}
@@ -212,11 +186,12 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
               title="Review inbox"
               description="Self-assigned decision assertions waiting for review."
               items={decisions.pending}
-              pending={pending}
+              pending={false}
               assigneeIdentities={index.identities}
               emptyText="No self-assigned decisions need review."
               className="my-accountability-review-lane"
               onReview={reviewItem}
+              getActionState={assertionActions.getActionState}
             />
           </section>
 
@@ -225,10 +200,11 @@ export function MyAccountabilityView({ index }: MyAccountabilityViewProps) {
               title="Decision log"
               description="Accepted self-assigned decisions in chronological order."
               items={decisions.accepted}
-              pending={pending}
+              pending={false}
               assigneeIdentities={index.identities}
               emptyText="No accepted decisions yet."
               className="my-accountability-review-lane"
+              getActionState={assertionActions.getActionState}
             />
           </section>
         </div>

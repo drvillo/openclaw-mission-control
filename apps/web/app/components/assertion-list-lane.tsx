@@ -4,6 +4,7 @@ import { type ReactNode } from "react";
 import { AssertionCard, type AssertionReviewOperation } from "./assertion-card";
 import type { MyAccountabilityActionStatus } from "../lib/my-accountability";
 import type { MyntIndex, MyntItem } from "../lib/mynt";
+import type { AssertionActionState } from "./use-assertion-actions";
 
 type AssertionLaneShellProps = {
   title: string;
@@ -28,6 +29,7 @@ type AssertionListLaneProps = {
   onReassign?: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
   onActionStatusChange?: (item: MyntItem, status: MyAccountabilityActionStatus) => void;
   onMarkDone?: (item: MyntItem) => void;
+  getActionState?: (item: MyntItem) => AssertionActionState;
 };
 
 export function AssertionLaneShell({ title, description, count, emptyText, className, children }: AssertionLaneShellProps) {
@@ -61,6 +63,7 @@ export function AssertionListLane({
   onReassign,
   onActionStatusChange,
   onMarkDone,
+  getActionState,
 }: AssertionListLaneProps) {
   return (
     <AssertionLaneShell title={title} description={description} count={items.length} emptyText={emptyText} className={className}>
@@ -69,6 +72,7 @@ export function AssertionListLane({
           key={item.id}
           item={item}
           pending={pending}
+          actionState={getActionState?.(item)}
           assigneeIdentities={assigneeIdentities}
           showPerson={showPerson}
           showActionWorkflow={item.kind === "action" && showActionWorkflow}

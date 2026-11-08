@@ -27,8 +27,10 @@ Start with the [Product Requirements Document](./PRD.md) for product intent, dom
 3. [Graph Concept Metadata And Toggle](./phase-3-graph-concept-metadata-toggle.md)
 4. [Cluster Regions And Concept Selection](./phase-4-cluster-regions-selection.md)
 5. [Manual Curation](./phase-5-manual-curation.md)
-6. [Concept Proposal And Backfill](./phase-6-concept-proposal-backfill.md)
+6. [Semantic Proposal Runbook](./semantic-proposal-runbook.md)
 7. [Documentation And Readiness](./phase-7-documentation-readiness.md)
+
+Implemented readiness notes: [Implementation Readiness](./implementation-readiness.md). The current operational path is semantic autopilot: meeting ingestion can trigger refresh/import, safe proposals auto-apply as `semantic_auto`, `/semantic-concepts` is the tuning console for needs-review / auto-applied / suppressed-rejected states, and the graph **Semantic groups** toggle renders accepted/auto-applied concepts as real group nodes connected to assertions and people.
 
 Each phase must meet its acceptance criteria before the next phase starts. The implementation should preserve existing review, reassign, mark-done, filtering, and graph behavior unless a phase explicitly changes that behavior.
 

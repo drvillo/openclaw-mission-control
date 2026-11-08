@@ -4,15 +4,19 @@ import { Fragment, useMemo, useState } from "react";
 import { AccountabilityGraphView } from "./accountability-graph-view";
 import { type AssertionReviewOperation } from "./assertion-card";
 import { AssertionListLane } from "./assertion-list-lane";
-import { formatDisplayDate } from "../lib/date-format";
+import { SearchControl } from "./search-control";
 import {
-  meetingReviewPayloadItems,
-  personForAssignee,
-  postMeetingReview,
-  type MeetingReviewPayloadItem,
-  type ReassignActionPayload,
-} from "../lib/meeting-review-client";
+  applyActionDoneToItems,
+  applyMyntReassignment,
+  applyReviewToItems,
+  assertionActionKey,
+  useAssertionActions,
+} from "./use-assertion-actions";
+import { useUrlSearchQuery } from "./use-url-search-query";
+import { formatDisplayDate } from "../lib/date-format";
+import { meetingReviewPayloadItems } from "../lib/meeting-review-client";
 import type { MyntIndex, MyntItem, MyntPerson } from "../lib/mynt";
+import { itemMatchesSearch } from "../lib/search";
 
 type MyntViewProps = {
   index: MyntIndex;
@@ -30,23 +34,6 @@ function pendingItems(items: MyntItem[]) {
 
 function hasAcceptablePendingItems(items: MyntItem[]) {
   return meetingReviewPayloadItems(pendingItems(items)).length > 0;
-}
-
-function filterPersonToPending(person: MyntPerson): MyntPerson | null {
-  const actions = pendingItems(person.actions);
-  const decisions = pendingItems(person.decisions);
-  const totalCount = actions.length + decisions.length;
-  if (totalCount === 0) {
-    return null;
-  }
-  return {
-    ...person,
-    actionCount: actions.length,
-    decisionCount: decisions.length,
-    totalCount,
-    actions,
-    decisions,
-  };
 }
 
 function buildPeople(items: MyntItem[]) {
@@ -80,23 +67,30 @@ function buildPeople(items: MyntItem[]) {
 
 export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pendingReviewOnly = false }: MyntViewProps) {
   const [localItems, setLocalItems] = useState(index.items);
+  const [pendingReviewVisibleKeys] = useState(() => new Set(index.items.filter((item) => item.reviewStatus === "needs_review").map(assertionActionKey)));
   const [expandedPersonId, setExpandedPersonId] = useState<string | null>(initialExpandedPersonId ?? null);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [search, setSearch] = useUrlSearchQuery();
+  const assertionActions = useAssertionActions();
 
-  const peopleWithSelf = useMemo(() => buildPeople(localItems.filter((item) => !item.archived)), [localItems]);
-  const visiblePeople = useMemo(() => {
-    const people = peopleWithSelf.filter((person) => !person.isSelf);
-    return pendingReviewOnly
-      ? people.map(filterPersonToPending).filter((person): person is MyntPerson => Boolean(person))
-      : people;
-  }, [peopleWithSelf, pendingReviewOnly]);
+  const visibleItems = useMemo(
+    () =>
+      localItems
+        .filter((item) => !item.archived && !item.person.isSelf)
+        .filter((item) => !pendingReviewOnly || item.reviewStatus === "needs_review" || pendingReviewVisibleKeys.has(assertionActionKey(item)))
+        .filter((item) => itemMatchesSearch(item, search)),
+    [localItems, pendingReviewOnly, pendingReviewVisibleKeys, search],
+  );
+  const visiblePeople = useMemo(() => buildPeople(visibleItems), [visibleItems]);
 
   function selectPerson(personId: string | null, options: { updateUrl?: boolean } = {}) {
     setExpandedPersonId(personId);
     if (options.updateUrl !== false) {
-      window.history.pushState(null, "", personId ? `/accountability/people/${encodeURIComponent(personId)}` : "/accountability/people");
+      const nextUrl = new URL(window.location.href);
+      nextUrl.pathname = personId ? `/accountability/people/${encodeURIComponent(personId)}` : "/accountability/people";
+      window.history.pushState(null, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
     }
   }
 
@@ -122,20 +116,14 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
     }
   }
 
-  function postReview(operation: ReviewOperation, items: MeetingReviewPayloadItem[]) {
-    if (items.length === 0) {
-      setMessage("No pending review items with assertion IDs.");
-      return;
-    }
-    setPending(true);
+  function postReview(operation: ReviewOperation, items: MyntItem[]) {
     setMessage(null);
-    void postMeetingReview({ operation, items })
-      .then((payload) => {
-        setMessage(payload.summary);
-        window.location.reload();
-      })
-      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
-      .finally(() => setPending(false));
+    void assertionActions.reviewItems(operation, items, {
+      pendingOnly: true,
+      emptyMessage: "No pending review items with assertion IDs.",
+      onSuccess: (_payload, payloadItems) => setLocalItems((current) => applyReviewToItems(current, operation, payloadItems)),
+      onMessage: setMessage,
+    });
   }
 
   function reviewItem(operation: ReviewOperation, item: MyntItem) {
@@ -143,37 +131,17 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
       setMessage("This item does not have a database assertion ID.");
       return;
     }
-    if (operation === "reject" && !window.confirm(`Reject and delete ${item.kind === "action" ? "action" : "decision"} from ${item.meetingTitle}?`)) {
-      return;
-    }
-    postReview(operation, [{ kind: item.kind, assertionId: item.assertionId }]);
+    setMessage(null);
+    void assertionActions.reviewItem(operation, item, {
+      onSuccess: (_payload, payloadItems) => setLocalItems((current) => applyReviewToItems(current, operation, payloadItems)),
+    });
   }
 
   async function reassignAction(assertionId: string, assignee: string) {
-    setPending(true);
     setMessage(null);
-    try {
-      const payload = await postMeetingReview({ operation: "reassign_action", assertionId, assignee });
-      const reassignPayload = payload.payload as ReassignActionPayload | undefined;
-      if (reassignPayload?.reassigned !== 1 || !reassignPayload.assignee) {
-        setMessage(payload.summary || "No action was reassigned.");
-        return false;
-      }
-      setLocalItems((current) =>
-        current.map((item) =>
-          item.kind === "action" && item.assertionId === assertionId
-            ? { ...item, person: personForAssignee(reassignPayload.assignee ?? assignee, index.identities) }
-            : item,
-        ),
-      );
-      setMessage(payload.summary);
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return false;
-    } finally {
-      setPending(false);
-    }
+    return assertionActions.reassignAction(assertionId, assignee, {
+      onSuccess: (payload) => setLocalItems((current) => applyMyntReassignment(current, assertionId, payload.assignee ?? assignee, index.identities)),
+    });
   }
 
   function markActionDone(item: MyntItem) {
@@ -181,21 +149,10 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
       setMessage("This action does not have a database assertion ID.");
       return;
     }
-    setPending(true);
     setMessage(null);
-    void postMeetingReview({ operation: "mark_action_done", assertionId: item.assertionId })
-      .then((payload) => {
-        setLocalItems((current) =>
-          current.map((entry) =>
-            entry.kind === "action" && entry.assertionId === item.assertionId
-              ? { ...entry, reviewStatus: "accepted", status: "done" }
-              : entry,
-          ),
-        );
-        setMessage(payload.summary);
-      })
-      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
-      .finally(() => setPending(false));
+    void assertionActions.markActionDone(item, {
+      onSuccess: () => setLocalItems((current) => applyActionDoneToItems(current, [item.assertionId as string])),
+    });
   }
 
   function archiveOlderThan30() {
@@ -215,6 +172,12 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
   return (
     <div className="mynt-shell">
       <div className="mynt-toolbar">
+        <SearchControl
+          value={search}
+          onChange={setSearch}
+          placeholder="Search people, assertions, meetings"
+          resultSummary={`${visibleItems.length} visible`}
+        />
         <button type="button" className="action-trigger" onClick={archiveOlderThan30} disabled={pending}>
           Archive older than 30 days
         </button>
@@ -236,18 +199,22 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
 
       {viewMode === "graph" ? (
         <AccountabilityGraphView
-          items={localItems.filter((item) => !item.archived && !item.person.isSelf)}
+          items={visibleItems}
           people={visiblePeople}
           identities={index.identities}
           pending={pending}
           pendingReviewOnly={pendingReviewOnly}
+          searchValue={search}
+          searchResultSummary={`${visibleItems.length} visible`}
           selectedPersonId={expandedPersonId}
+          onSearchChange={setSearch}
           onClose={() => setViewMode("list")}
           onSelectPerson={selectPerson}
           onReview={reviewItem}
           onReassign={reassignAction}
           onMarkDone={markActionDone}
-          onAcceptPending={(items) => postReview("accept", meetingReviewPayloadItems(pendingItems(items)))}
+          getActionState={assertionActions.getActionState}
+          onAcceptPending={(items) => postReview("accept", pendingItems(items))}
         />
       ) : (
       <div className="table-shell mynt-people-list">
@@ -289,7 +256,7 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
                             type="button"
                             className="action-trigger"
                             disabled={pending || !hasAcceptablePendingItems([...person.actions, ...person.decisions])}
-                            onClick={() => postReview("accept", meetingReviewPayloadItems(pendingItems([...person.actions, ...person.decisions])))}
+                            onClick={() => postReview("accept", pendingItems([...person.actions, ...person.decisions]))}
                           >
                             Accept pending
                           </button>
@@ -304,6 +271,7 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
                             onReview={reviewItem}
                             onReassign={reassignAction}
                             onMarkDone={markActionDone}
+                            getActionState={assertionActions.getActionState}
                             assigneeIdentities={index.identities}
                           />
                           <AssertionListLane
@@ -314,6 +282,7 @@ export function MyntView({ index, expandedPersonId: initialExpandedPersonId, pen
                             pending={pending}
                             onReview={reviewItem}
                             onReassign={reassignAction}
+                            getActionState={assertionActions.getActionState}
                             assigneeIdentities={index.identities}
                           />
                         </div>

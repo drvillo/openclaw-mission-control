@@ -3,15 +3,22 @@
 import { useMemo, useState } from "react";
 import { AccountabilityGraphView } from "./accountability-graph-view";
 import { ActionReassignControl } from "./action-reassign-control";
-import { formatDisplayDate } from "../lib/date-format";
+import { AssertionActionControls } from "./assertion-action-controls";
+import { ConceptBadge } from "./assertion-card";
+import { SearchControl } from "./search-control";
 import {
-  meetingReviewPayloadItems,
-  postMeetingReview,
-  type MeetingReviewPayloadItem,
-  type ReassignActionPayload,
-} from "../lib/meeting-review-client";
+  applyActionDoneToItems,
+  applyMyntReassignment,
+  applyReviewToItems,
+  assertionActionKey,
+  useAssertionActions,
+} from "./use-assertion-actions";
+import { useUrlSearchQuery } from "./use-url-search-query";
+import { formatDisplayDate } from "../lib/date-format";
+import { meetingReviewPayloadItems } from "../lib/meeting-review-client";
 import { normalizeMyAccountabilityActionStatus } from "../lib/my-accountability";
 import type { MyntIndex, MyntItem, MyntPerson } from "../lib/mynt";
+import { itemMatchesSearch } from "../lib/search";
 
 export type AssertionStatusFilter = "all" | "accepted" | "pending";
 
@@ -91,19 +98,29 @@ function buildPeople(items: MyntItem[]) {
 
 export function AssertionRegister({ index, kind, statusFilter }: AssertionRegisterProps) {
   const [allItems, setAllItems] = useState(index.items);
+  const [pendingReviewVisibleKeys] = useState(() => new Set(index.items.filter((item) => item.reviewStatus === "needs_review").map(assertionActionKey)));
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [search, setSearch] = useUrlSearchQuery();
+  const assertionActions = useAssertionActions();
 
   const items = useMemo(
     () =>
       allItems
-        .filter((item) => item.kind === kind && !item.archived && statusMatches(item, statusFilter))
+        .filter(
+          (item) =>
+            item.kind === kind &&
+            !item.archived &&
+            (statusFilter !== "pending" || item.reviewStatus === "needs_review" || pendingReviewVisibleKeys.has(assertionActionKey(item))) &&
+            (statusFilter === "pending" || statusMatches(item, statusFilter)),
+        )
+        .filter((item) => itemMatchesSearch(item, search))
         .sort((left, right) => right.meetingDate.localeCompare(left.meetingDate) || left.person.displayName.localeCompare(right.person.displayName)),
-    [allItems, kind, statusFilter],
+    [allItems, kind, pendingReviewVisibleKeys, search, statusFilter],
   );
   const selectedItems = items.filter((item) => selectedIds.includes(rowKey(item)));
   const selectedReviewItems = selectedItems.filter((item) => item.reviewStatus === "needs_review");
@@ -136,29 +153,20 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
   }
 
   function postReview(operation: ReviewOperation, reviewItems: MyntItem[]) {
-    const payloadItems = meetingReviewPayloadItems(reviewItems, { pendingOnly: true });
-    if (payloadItems.length === 0) {
-      setMessage("No selected pending review items with assertion IDs.");
-      return;
-    }
-    if (operation === "reject" && !window.confirm(`Reject and delete ${payloadItems.length} pending ${kind}${payloadItems.length === 1 ? "" : "s"}?`)) {
-      return;
-    }
-    void postReviewItems(operation, payloadItems);
-  }
-
-  async function postReviewItems(operation: ReviewOperation, payloadItems: MeetingReviewPayloadItem[]) {
-    setPending(true);
     setMessage(null);
-    try {
-      const payload = await postMeetingReview({ operation, items: payloadItems });
-      setMessage(payload.summary);
-      window.location.reload();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setPending(false);
-    }
+    void assertionActions.reviewItems(operation, reviewItems, {
+      pendingOnly: true,
+      emptyMessage: "No selected pending review items with assertion IDs.",
+      onSuccess: (_payload, payloadItems) => {
+        setAllItems((current) => applyReviewToItems(current, operation, payloadItems));
+        setSelectedIds((current) =>
+          operation === "reject"
+            ? current.filter((id) => !payloadItems.some((payloadItem) => id === `${payloadItem.kind}:${payloadItem.assertionId}`))
+            : current,
+        );
+      },
+      onMessage: reviewItems.length > 1 ? setMessage : undefined,
+    });
   }
 
   async function markActionsDone(actionItems: MyntItem[]) {
@@ -169,24 +177,20 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
       setMessage("No selected non-done actions with assertion IDs.");
       return;
     }
-    setPending(true);
     setMessage(null);
-    try {
-      const payloads = await Promise.all(assertionIds.map((assertionId) => postMeetingReview({ operation: "mark_action_done", assertionId })));
-      const updatedAssertionIds = new Set(assertionIds);
-      setAllItems((current) =>
-        current.map((item) =>
-          item.kind === "action" && item.assertionId && updatedAssertionIds.has(item.assertionId)
-            ? { ...item, reviewStatus: "accepted", status: "done" }
-            : item,
+    void Promise.all(
+      actionItems
+        .filter((item) => canMarkActionDone(item) && Boolean(item.assertionId))
+        .map((item) =>
+          assertionActions.markActionDone(item, {
+            onSuccess: () => setAllItems((current) => applyActionDoneToItems(current, [item.assertionId as string])),
+          }),
         ),
-      );
-      setMessage(assertionIds.length === 1 ? payloads[0].summary : `Marked ${assertionIds.length} actions done.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setPending(false);
-    }
+    ).then((results) => {
+      if (assertionIds.length > 1 && results.every(Boolean)) {
+        setMessage(`Marked ${assertionIds.length} actions done.`);
+      }
+    });
   }
 
   function reassignAction(assertionId: string, assignee: string) {
@@ -202,38 +206,13 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
   }
 
   async function postReassign(assertionId: string, assignee: string) {
-    setPending(true);
     setMessage(null);
-    try {
-      const payload = await postMeetingReview({ operation: "reassign_action", assertionId, assignee });
-      const reassignPayload = payload.payload as ReassignActionPayload | undefined;
-      if (reassignPayload?.reassigned !== 1 || !reassignPayload.assignee) {
-        setMessage(payload.summary || "No action was reassigned.");
-        return false;
-      }
-      setAllItems((current) =>
-        current.map((item) =>
-          item.kind === "action" && item.assertionId === assertionId
-            ? {
-                ...item,
-                person: {
-                  ...item.person,
-                  displayName: reassignPayload.assignee ?? assignee,
-                  raw: reassignPayload.assignee ?? assignee,
-                },
-              }
-            : item,
-        ),
-      );
-      setReassigningId(null);
-      setMessage(payload.summary);
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return false;
-    } finally {
-      setPending(false);
-    }
+    return assertionActions.reassignAction(assertionId, assignee, {
+      onSuccess: (payload) => {
+        setAllItems((current) => applyMyntReassignment(current, assertionId, payload.assignee ?? assignee, index.identities));
+        setReassigningId(null);
+      },
+    });
   }
 
   function archiveOlderThan30() {
@@ -274,6 +253,12 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
       </nav>
 
       <div className="mynt-toolbar pending-review-toolbar">
+        <SearchControl
+          value={search}
+          onChange={setSearch}
+          placeholder={`Search ${kindLabel(kind).toLowerCase()}`}
+          resultSummary={`${items.length} visible`}
+        />
         <button type="button" className="action-trigger" onClick={archiveOlderThan30} disabled={pending}>
           Archive older than 30 days
         </button>
@@ -316,12 +301,16 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
           pending={pending}
           pendingReviewOnly={statusFilter === "pending"}
           includeSelf
+          searchValue={search}
+          searchResultSummary={`${items.length} visible`}
           selectedPersonId={selectedPersonId}
+          onSearchChange={setSearch}
           onClose={() => setViewMode("table")}
           onSelectPerson={selectPerson}
           onReview={reviewItem}
           onReassign={reassignAction}
           onMarkDone={(item) => void markActionsDone([item])}
+          getActionState={assertionActions.getActionState}
           onAcceptPending={(pendingItems) => postReview("accept", pendingItems)}
         />
       ) : (
@@ -350,6 +339,9 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
                   </td>
                   <td>
                     <strong>{item.summary}</strong>
+                    <div className="assertion-register-row-meta">
+                      <ConceptBadge item={item} />
+                    </div>
                   </td>
                   <td>{item.person.displayName}</td>
                   <td>
@@ -365,28 +357,21 @@ export function AssertionRegister({ index, kind, statusFilter }: AssertionRegist
                   </td>
                   <td>
                     <div className="pending-review-row-actions">
-                      {item.reviewStatus === "needs_review" && reassigningId !== itemKey ? (
-                        <>
-                          <button type="button" className="meeting-review-action-button" disabled={pending || !item.assertionId} onClick={() => postReview("accept", [item])}>
-                            Accept
-                          </button>
-                          <button type="button" className="meeting-review-action-button meeting-review-action-danger" disabled={pending || !item.assertionId} onClick={() => postReview("reject", [item])}>
-                            Reject
-                          </button>
-                        </>
-                      ) : null}
-                      {kind === "action" && canMarkActionDone(item) ? (
-                        <button type="button" className="meeting-review-action-button" disabled={pending || !item.assertionId} onClick={() => void markActionsDone([item])}>
-                          Mark as done
-                        </button>
-                      ) : null}
+                      <AssertionActionControls
+                        item={item}
+                        actionState={{ ...assertionActions.getActionState(item), pending: pending || assertionActions.getActionState(item).pending }}
+                        reassignOpen={reassigningId === itemKey}
+                        acceptLabel="Accept"
+                        onReview={(operation, reviewItem) => postReview(operation, [reviewItem])}
+                        onMarkDone={kind === "action" ? (actionItem) => void markActionsDone([actionItem]) : undefined}
+                      />
                       {kind === "action" ? (
                         <ActionReassignControl
                           assertionId={item.assertionId}
                           currentAssignee={item.person.raw}
                           meetingParticipants={item.meetingParticipants}
                           identities={index.identities}
-                          pending={pending}
+                          pending={pending || assertionActions.getActionState(item).pending}
                           onReassign={reassignAction}
                           onOpenChange={(open) => setReassigningId(open ? itemKey : null)}
                         />

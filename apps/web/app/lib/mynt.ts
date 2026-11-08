@@ -6,9 +6,11 @@ import {
   backfillMyntIdentityReferences,
   bootstrapMyntIdentitiesFromRawValues,
   importLegacyMyntStateFile,
+  loadAccountabilityConceptMetadataForAssertions,
   loadMyntStateFromDb,
   openMissionControlDb,
   updateMyntIdentityEmailInDb,
+  type AccountabilityConceptMetadata,
 } from "@ocmc/db";
 import { MISSION_CONTROL_DB_PATH, MISSION_CONTROL_STATE_DIR } from "./config";
 import type { MeetingIndex, MeetingRecording, MeetingReviewItem } from "./meetings";
@@ -68,6 +70,7 @@ export type MyntItem = {
   dueDate: string | null;
   dueText: string | null;
   associations: Array<{ identityId: string; displayName: string; email: string | null }>;
+  concept?: AccountabilityConceptMetadata | null;
   archived: boolean;
 };
 
@@ -338,13 +341,20 @@ function itemId(meeting: MeetingRecording, item: MeetingReviewItem, index: numbe
   return item.id || `${meeting.id}:${item.kind}:${index + 1}`;
 }
 
-function toMyntItem(meeting: MeetingRecording, reviewItem: MeetingReviewItem, index: number, state: MyntState): MyntItem | null {
+function toMyntItem(
+  meeting: MeetingRecording,
+  reviewItem: MeetingReviewItem,
+  index: number,
+  state: MyntState,
+  conceptsByAssertion: Map<string, AccountabilityConceptMetadata> = new Map(),
+): MyntItem | null {
   const rawPerson = reviewItem.kind === "action" ? reviewItem.assignee : reviewItem.owner;
   const person = resolvePerson(rawPerson, state);
   if (!person) {
     return null;
   }
   const id = itemId(meeting, reviewItem, index);
+  const concept = reviewItem.assertionId ? conceptsByAssertion.get(`${reviewItem.kind}:${reviewItem.assertionId}`) ?? null : null;
   return {
     id,
     kind: reviewItem.kind,
@@ -368,6 +378,7 @@ function toMyntItem(meeting: MeetingRecording, reviewItem: MeetingReviewItem, in
     dueDate: reviewItem.dueDate,
     dueText: reviewItem.dueText,
     associations: reviewItem.associations,
+    concept,
     archived: state.archivedItemIds.includes(id),
   };
 }
@@ -510,11 +521,16 @@ export function previewMyntArchive(items: MyntItem[], tasks: ObsidianBoardTask[]
   };
 }
 
-export function buildMyntIndexFromState(index: MeetingIndex, state: MyntState, taskBoard?: ObsidianBoardPayload): MyntIndex {
+export function buildMyntIndexFromState(
+  index: MeetingIndex,
+  state: MyntState,
+  taskBoard?: ObsidianBoardPayload,
+  conceptsByAssertion: Map<string, AccountabilityConceptMetadata> = new Map(),
+): MyntIndex {
   const effectiveState = withInferredIdentities(index, state);
   const items = index.meetings.flatMap((meeting) => [
-    ...meeting.actions.map((item, idx) => toMyntItem(meeting, item, idx, effectiveState)),
-    ...meeting.decisions.map((item, idx) => toMyntItem(meeting, item, idx, effectiveState)),
+    ...meeting.actions.map((item, idx) => toMyntItem(meeting, item, idx, effectiveState, conceptsByAssertion)),
+    ...meeting.decisions.map((item, idx) => toMyntItem(meeting, item, idx, effectiveState, conceptsByAssertion)),
   ]).filter((item): item is MyntItem => Boolean(item));
   const activeItems = items.filter((item) => !item.archived);
   const peopleWithSelf = buildPeople(activeItems);
@@ -540,7 +556,14 @@ export function buildMyntIndex(index: MeetingIndex, taskBoard?: ObsidianBoardPay
     bootstrapMyntIdentitiesFromRawValues(db, rawIdentityValuesFromIndex(index));
     backfillMyntIdentityReferences(db);
     const state = normalizeState(loadMyntStateFromDb(db));
-    return buildMyntIndexFromState(index, state, taskBoard);
+    const conceptsByAssertion = loadAccountabilityConceptMetadataForAssertions(
+      db,
+      index.meetings.flatMap((meeting) => [
+        ...meeting.actions.map((item) => ({ kind: "action" as const, assertionId: item.assertionId })),
+        ...meeting.decisions.map((item) => ({ kind: "decision" as const, assertionId: item.assertionId })),
+      ]),
+    );
+    return buildMyntIndexFromState(index, state, taskBoard, conceptsByAssertion);
   } finally {
     db.close();
   }

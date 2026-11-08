@@ -1,18 +1,21 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
+import { AssertionActionControls } from "./assertion-action-controls";
 import { ActionReassignControl } from "./action-reassign-control";
 import { AssertionAssociations } from "./assertion-associations";
 import { AppLink } from "./app-link";
 import { formatDisplayDate } from "../lib/date-format";
 import { normalizeMyAccountabilityActionStatus, type MyAccountabilityActionStatus } from "../lib/my-accountability";
 import type { MyntIndex, MyntItem } from "../lib/mynt";
+import type { AssertionActionState } from "./use-assertion-actions";
 
 export type AssertionReviewOperation = "accept" | "reject";
 
 type AssertionCardProps = {
   item: MyntItem;
   pending: boolean;
+  actionState?: AssertionActionState;
   assigneeIdentities: MyntIndex["identities"];
   showPerson?: boolean;
   showActionWorkflow?: boolean;
@@ -41,6 +44,17 @@ export function ReviewStatusBadge({ status }: { status: MyntItem["reviewStatus"]
   return <StatusBadge status={status}>{reviewStatusLabel(status)}</StatusBadge>;
 }
 
+export function ConceptBadge({ item }: { item: MyntItem }) {
+  if (!item.concept || item.concept.status !== "active") {
+    return null;
+  }
+  return (
+    <span className="accountability-concept-badge" title={item.concept.summary || "Accountability concept"}>
+      Concept · {item.concept.label}
+    </span>
+  );
+}
+
 export function displayRawItemStatus(status: string | null) {
   const normalized = status?.trim().toLowerCase().replace(/\s+/gu, "_") ?? "";
   return normalized === "needs_review" || normalized === "accepted" ? null : status;
@@ -49,6 +63,7 @@ export function displayRawItemStatus(status: string | null) {
 export function AssertionCard({
   item,
   pending,
+  actionState = { pending, error: null },
   assigneeIdentities,
   showPerson = false,
   showActionWorkflow = false,
@@ -59,10 +74,10 @@ export function AssertionCard({
 }: AssertionCardProps) {
   const [reassignOpen, setReassignOpen] = useState(false);
   const rawStatus = displayRawItemStatus(item.status);
-  const canReview = item.reviewStatus === "needs_review" && !reassignOpen && onReview;
   const canReassign = item.kind === "action" && onReassign;
   const canUseWorkflow = item.kind === "action" && showActionWorkflow;
-  const canMarkDone = item.kind === "action" && onMarkDone && normalizeMyAccountabilityActionStatus(item.status) !== "done";
+  const pendingForItem = pending || actionState.pending;
+  const combinedActionState = { ...actionState, pending: pendingForItem };
 
   return (
     <article className="mynt-item-card">
@@ -72,6 +87,7 @@ export function AssertionCard({
             {item.kind === "action" ? "Action" : "Decision"}
           </span>
           <ReviewStatusBadge status={item.reviewStatus} />
+          <ConceptBadge item={item} />
           <AssertionAssociations associations={item.associations} />
         </div>
         <time dateTime={item.meetingDate}>{formatDisplayDate(item.meetingDate)}</time>
@@ -137,7 +153,7 @@ export function AssertionCard({
             <select
               className="mynt-identity-select"
               value={normalizeMyAccountabilityActionStatus(item.status)}
-              disabled={pending || !item.assertionId}
+              disabled={pendingForItem || !item.assertionId}
               onChange={(event) => onActionStatusChange?.(item, event.target.value as MyAccountabilityActionStatus)}
             >
               {ACTION_STATUS_OPTIONS.map((option) => (
@@ -153,28 +169,20 @@ export function AssertionCard({
         <AppLink href={`/meetings/${encodeURIComponent(item.meetingId)}/items/${encodeURIComponent(item.id)}`}>
           Open in My meetings
         </AppLink>
-        {canReview ? (
-          <>
-            <button type="button" className="meeting-review-action-button" disabled={pending || !item.assertionId} onClick={() => onReview("accept", item)}>
-              Approve
-            </button>
-            <button type="button" className="meeting-review-action-button meeting-review-action-danger" disabled={pending || !item.assertionId} onClick={() => onReview("reject", item)}>
-              Reject
-            </button>
-          </>
-        ) : null}
-        {canMarkDone ? (
-          <button type="button" className="meeting-review-action-button" disabled={pending || !item.assertionId} onClick={() => onMarkDone(item)}>
-            Mark as done
-          </button>
-        ) : null}
+        <AssertionActionControls
+          item={item}
+          actionState={combinedActionState}
+          reassignOpen={reassignOpen}
+          onReview={onReview}
+          onMarkDone={onMarkDone}
+        />
         {canReassign ? (
           <ActionReassignControl
             assertionId={item.assertionId}
             currentAssignee={item.person.raw}
             meetingParticipants={item.meetingParticipants}
             identities={assigneeIdentities}
-            pending={pending}
+            pending={pendingForItem}
             onReassign={onReassign}
             onOpenChange={setReassignOpen}
           />

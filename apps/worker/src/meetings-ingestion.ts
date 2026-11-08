@@ -4,9 +4,14 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   backfillAssertionAssociations,
+  executeMissionControlSemanticRefresh,
+  finishSemanticRefreshRun,
   ingestMeetingDocument,
   importLegacyMyntStateFile,
   recordMeetingIngestionFailure,
+  startSemanticRefreshRun,
+  updateMeetingIngestionSemanticResult,
+  type SemanticRefreshExecuteResult,
   type MeetingIngestionEvidenceLink,
   type MeetingIngestionPayload,
   type MeetingIngestionResult,
@@ -37,9 +42,30 @@ export type MeetingNotePathIngestionResult = {
   actionCount?: number;
   decisionCount?: number;
   ingestionRunId?: string;
+  semanticRefresh?: MeetingIngestionSemanticRefreshResult;
   error?: string;
   errorKind?: IngestionErrorKind;
 };
+
+export type MeetingIngestionSemanticRefreshResult = {
+  semanticRefreshRunId: string;
+  status: "completed" | "failed";
+  indexVersionId?: string | null;
+  proposalRunId?: string | null;
+  proposalsImported?: number;
+  autoApplied?: number;
+  pending?: number;
+  error?: string;
+};
+
+export type MeetingIngestionSemanticRefreshInput = {
+  db: DatabaseSync;
+  result: MeetingNotePathIngestionResult;
+  trigger: string;
+  source?: string | null;
+};
+
+export type MeetingIngestionSemanticRefreshFn = (input: MeetingIngestionSemanticRefreshInput & { semanticRefreshRunId: string }) => Promise<SemanticRefreshExecuteResult> | SemanticRefreshExecuteResult;
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -354,6 +380,71 @@ export function ingestMeetingNotePath(
       error: message,
       errorKind,
     };
+  }
+}
+
+export async function runPostMeetingIngestionSemanticRefresh(
+  db: DatabaseSync,
+  result: MeetingNotePathIngestionResult,
+  options: { enabled?: boolean; refresh?: MeetingIngestionSemanticRefreshFn | null; trigger?: string; source?: string | null } = {},
+): Promise<MeetingIngestionSemanticRefreshResult | null> {
+  if (!options.enabled || result.status === "failed") {
+    return null;
+  }
+  const started = startSemanticRefreshRun(db, {
+    trigger: options.trigger ?? "meeting_ingestion",
+    source: options.source ?? result.canonicalSourcePath ?? result.absolutePath ?? null,
+    sourceDocumentId: result.sourceDocumentId ?? null,
+    documentVersionId: result.documentVersionId ?? null,
+    ingestionRunId: result.ingestionRunId ?? null,
+  });
+  const refresh = options.refresh ?? ((input) => executeMissionControlSemanticRefresh(input.db, {
+    trigger: input.trigger,
+    source: input.source,
+    sourceDocumentId: input.result.sourceDocumentId ?? null,
+    documentVersionId: input.result.documentVersionId ?? null,
+    ingestionRunId: input.result.ingestionRunId ?? null,
+  }));
+  try {
+    const payload = await refresh({ db, result, trigger: started.trigger, source: started.source, semanticRefreshRunId: started.semanticRefreshRunId });
+    const finished = finishSemanticRefreshRun(db, {
+      semanticRefreshRunId: started.semanticRefreshRunId,
+      status: "completed",
+      indexVersionId: payload.indexVersionId,
+      proposalRunId: payload.proposalRunId,
+      proposalsImported: payload.proposalsImported,
+      autoApplied: payload.autoApplied,
+      pending: payload.pending,
+    });
+    updateMeetingIngestionSemanticResult(db, result.ingestionRunId, {
+      status: "succeeded",
+      message: `semantic refresh completed; imported ${finished.proposalsImported}, auto-applied ${finished.autoApplied}`,
+      proposalRunId: finished.proposalRunId,
+      autoAppliedCount: finished.autoApplied,
+      finishedAt: finished.finishedAt,
+    });
+    return {
+      semanticRefreshRunId: finished.semanticRefreshRunId,
+      status: "completed",
+      indexVersionId: finished.indexVersionId,
+      proposalRunId: finished.proposalRunId,
+      proposalsImported: finished.proposalsImported,
+      autoApplied: finished.autoApplied,
+      pending: finished.pending,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const finished = finishSemanticRefreshRun(db, {
+      semanticRefreshRunId: started.semanticRefreshRunId,
+      status: "failed",
+      error: message,
+    });
+    updateMeetingIngestionSemanticResult(db, result.ingestionRunId, {
+      status: "failed",
+      message,
+      finishedAt: finished.finishedAt,
+    });
+    return { semanticRefreshRunId: finished.semanticRefreshRunId, status: "failed", error: message };
   }
 }
 

@@ -2,10 +2,22 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActionReassignControl, type ActionAssigneeIdentity } from "./action-reassign-control";
+import { AssertionActionControls } from "./assertion-action-controls";
 import { AssertionAssociations } from "./assertion-associations";
 import { CompactSelect, type CompactSelectOption } from "./compact-select";
+import { MeetingReviewItemShell, MeetingReviewListSection, MeetingReviewMetaItem } from "./meeting-review-list";
+import { SearchControl } from "./search-control";
+import {
+  applyActionDoneToItems,
+  applyReviewToItems,
+  assertionActionKey,
+  assertionPayloadItems,
+  useAssertionActions,
+} from "./use-assertion-actions";
+import { useUrlSearchQuery } from "./use-url-search-query";
 import { formatDisplayDate, formatDisplayDateTime } from "../lib/date-format";
 import type { MeetingDetail, MeetingIndex, MeetingRecording, MeetingReviewItem } from "../lib/meetings";
+import { itemMatchesSearch, meetingMatchesSearch } from "../lib/search";
 
 type MeetingsIndexProps = {
   index: MeetingIndex;
@@ -21,7 +33,6 @@ type MeetingDetailResponse =
   | { ok: true; meeting?: MeetingDetail; transcript?: MeetingDetail }
   | { ok: false; error: string };
 
-type ActionResponse = { ok: true; summary: string; payload?: unknown } | { ok: false; error: string };
 type ReassignPayload = { reassigned?: number; assertionId?: string; assignee?: string };
 type ReviewOperation = "accept" | "reject";
 type ReviewPayloadItem = { kind: "action" | "decision"; assertionId: string };
@@ -38,35 +49,6 @@ function toOptions(values: string[], allLabel: string): CompactSelectOption[] {
   return [{ value: "all", label: allLabel }, ...values.map((value) => ({ value, label: value }))];
 }
 
-function reviewHaystack(items: MeetingReviewItem[]) {
-  return items
-    .map((item) =>
-      [item.label, item.id, item.status, item.owner, item.assignee, item.confidence, item.summary, item.evidence]
-        .filter(Boolean)
-        .join(" "),
-    )
-    .join(" ");
-}
-
-function meetingMatchesSearch(meeting: MeetingRecording, query: string) {
-  if (!query) {
-    return true;
-  }
-  const haystack = [
-    meeting.title,
-    meeting.date,
-    meeting.month,
-    meeting.recordingId,
-    meeting.obsidianRef,
-    meeting.participants.join(" "),
-    reviewHaystack(meeting.actions),
-    reviewHaystack(meeting.decisions),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(query);
-}
-
 function CountBadges({ actions, decisions }: { actions: number; decisions: number }) {
   return (
     <span className="meeting-count-badges" aria-label={`${actions} actions and ${decisions} decisions`}>
@@ -80,14 +62,8 @@ function pendingReviewItems(items: MeetingReviewItem[]) {
   return items.filter((item) => item.reviewStatus === "needs_review");
 }
 
-function reviewPayloadItems(items: MeetingReviewItem[]): ReviewPayloadItem[] {
-  return items
-    .filter((item): item is MeetingReviewItem & { assertionId: string } => Boolean(item.assertionId))
-    .map((item) => ({ kind: item.kind, assertionId: item.assertionId }));
-}
-
 function hasAcceptablePendingReview(items: MeetingReviewItem[]) {
-  return reviewPayloadItems(pendingReviewItems(items)).length > 0;
+  return assertionPayloadItems(pendingReviewItems(items)).length > 0;
 }
 
 function reviewStatusLabel(status: MeetingReviewItem["reviewStatus"]) {
@@ -107,23 +83,13 @@ function displayRawItemStatus(status: string | null) {
   return normalized === "needs_review" || normalized === "accepted" ? null : status;
 }
 
-function ItemMeta({ label, value }: { label: string; value: string | number | null }) {
-  if (value === null || value === "") {
-    return null;
-  }
-  return (
-    <span className="meeting-review-meta-item">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </span>
-  );
-}
-
 function ReviewItemCard({
   item,
   onEvidenceClick,
   onReview,
   onReassign,
+  onMarkDone,
+  actionState,
   pending,
   focused,
   meetingParticipants,
@@ -133,17 +99,18 @@ function ReviewItemCard({
   onEvidenceClick: (time: string) => void;
   onReview: (operation: ReviewOperation, item: MeetingReviewItem) => void;
   onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
+  onMarkDone: (item: MeetingReviewItem) => void;
+  actionState: { pending: boolean; error: string | null };
   pending: boolean;
   focused?: boolean;
   meetingParticipants: string[];
   assigneeIdentities: ActionAssigneeIdentity[];
 }) {
   const evidenceTargetTime = item.evidenceTargetTime;
-  const hasAssertionId = Boolean(item.assertionId);
   const [reassigning, setReassigning] = useState(false);
 
   return (
-    <article className={`meeting-review-item ${focused ? "meeting-review-item-focused" : ""}`}>
+    <MeetingReviewItemShell focused={focused}>
       <div className="meeting-review-item-header">
         <div className="meeting-review-title-row">
           <span className="meeting-review-label">{item.label}</span>
@@ -160,33 +127,21 @@ function ReviewItemCard({
               Go to {evidenceTargetTime}
             </button>
           ) : null}
-          {item.reviewStatus === "needs_review" && !reassigning ? (
-            <>
-              <button
-                type="button"
-                className="meeting-review-action-button"
-                disabled={pending || !hasAssertionId}
-                onClick={() => onReview("accept", item)}
-              >
-                Accept
-              </button>
-              <button
-                type="button"
-                className="meeting-review-action-button meeting-review-action-danger"
-                disabled={pending || !hasAssertionId}
-                onClick={() => onReview("reject", item)}
-              >
-                Reject
-              </button>
-            </>
-          ) : null}
+          <AssertionActionControls
+            item={item}
+            actionState={{ ...actionState, pending: pending || actionState.pending }}
+            reassignOpen={reassigning}
+            acceptLabel="Accept"
+            onReview={onReview}
+            onMarkDone={item.kind === "action" ? onMarkDone : undefined}
+          />
           {item.kind === "action" ? (
             <ActionReassignControl
               assertionId={item.assertionId}
               currentAssignee={item.assignee}
               meetingParticipants={meetingParticipants}
               identities={assigneeIdentities}
-              pending={pending}
+              pending={pending || actionState.pending}
               onReassign={onReassign}
               onOpenChange={setReassigning}
             />
@@ -195,11 +150,11 @@ function ReviewItemCard({
       </div>
       <p>{item.summary || "No summary recorded."}</p>
       <div className="meeting-review-meta">
-        <ItemMeta label="Owner" value={item.owner} />
-        <ItemMeta label="Assignee" value={item.assignee} />
-        <ItemMeta label="Status" value={displayRawItemStatus(item.status)} />
-        <ItemMeta label="Confidence" value={item.confidence} />
-        <ItemMeta label="Score" value={item.score} />
+        <MeetingReviewMetaItem label="Owner" value={item.owner} />
+        <MeetingReviewMetaItem label="Assignee" value={item.assignee} />
+        <MeetingReviewMetaItem label="Status" value={displayRawItemStatus(item.status)} />
+        <MeetingReviewMetaItem label="Confidence" value={item.confidence} />
+        <MeetingReviewMetaItem label="Score" value={item.score} />
       </div>
       {item.evidence ? (
         <details className="meeting-evidence-details">
@@ -207,7 +162,7 @@ function ReviewItemCard({
           <pre className="meeting-evidence-snippet">{item.evidence}</pre>
         </details>
       ) : null}
-    </article>
+    </MeetingReviewItemShell>
   );
 }
 
@@ -219,6 +174,8 @@ function ReviewSection({
   onEvidenceClick,
   onReview,
   onReassign,
+  onMarkDone,
+  getActionState,
   pending,
   focusedItemId,
   meetingParticipants,
@@ -231,37 +188,31 @@ function ReviewSection({
   onEvidenceClick: (time: string) => void;
   onReview: (operation: ReviewOperation, item: MeetingReviewItem) => void;
   onReassign: (assertionId: string, assignee: string) => boolean | Promise<boolean>;
+  onMarkDone: (item: MeetingReviewItem) => void;
+  getActionState: (item: MeetingReviewItem) => { pending: boolean; error: string | null };
   pending: boolean;
   focusedItemId?: string;
   meetingParticipants: string[];
   assigneeIdentities: ActionAssigneeIdentity[];
 }) {
   return (
-    <section className="meeting-review-section">
-      <div className="meeting-review-section-header">
-        <h4>{title}</h4>
-        <span className="meeting-review-section-count">{count}</span>
-      </div>
-      {items.length > 0 ? (
-        <div className="meeting-review-list">
-          {items.map((item) => (
-            <ReviewItemCard
-              key={`${item.kind}-${item.label}-${item.id ?? item.summary}`}
-              item={item}
-              onEvidenceClick={onEvidenceClick}
-              onReview={onReview}
-              onReassign={onReassign}
-              pending={pending}
-              focused={Boolean(focusedItemId && item.id === focusedItemId)}
-              meetingParticipants={meetingParticipants}
-              assigneeIdentities={assigneeIdentities}
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="meeting-review-empty">{emptyText}</p>
-      )}
-    </section>
+    <MeetingReviewListSection title={title} count={count} emptyText={emptyText}>
+      {items.map((item) => (
+        <ReviewItemCard
+          key={`${item.kind}-${item.label}-${item.id ?? item.summary}`}
+          item={item}
+          onEvidenceClick={onEvidenceClick}
+          onReview={onReview}
+          onReassign={onReassign}
+          onMarkDone={onMarkDone}
+          actionState={getActionState(item)}
+          pending={pending}
+          focused={Boolean(focusedItemId && item.id === focusedItemId)}
+          meetingParticipants={meetingParticipants}
+          assigneeIdentities={assigneeIdentities}
+        />
+      ))}
+    </MeetingReviewListSection>
   );
 }
 
@@ -274,7 +225,11 @@ export function MeetingsIndex({
   pendingReviewOnly = false,
   assigneeIdentities,
 }: MeetingsIndexProps) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useUrlSearchQuery();
+  const [meetings, setMeetings] = useState(index.meetings);
+  const [pendingReviewVisibleKeys] = useState(
+    () => new Set(index.meetings.flatMap((meeting) => [...meeting.actions, ...meeting.decisions]).filter((item) => item.reviewStatus === "needs_review").map(assertionActionKey)),
+  );
   const [participant, setParticipant] = useState("all");
   const [month, setMonth] = useState("all");
   const [selectedId, setSelectedId] = useState(selectedMeetingId ?? index.meetings[0]?.id ?? null);
@@ -282,18 +237,23 @@ export function MeetingsIndex({
   const [meetingLoadingId, setMeetingLoadingId] = useState<string | null>(null);
   const [meetingError, setMeetingError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [reviewPending, setReviewPending] = useState(false);
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(true);
   const [highlightedTime, setHighlightedTime] = useState<string | null>(null);
   const [scrollRequest, setScrollRequest] = useState<{ time: string; token: number } | null>(null);
   const transcriptLineRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const assertionActions = useAssertionActions();
 
   const participantOptions = useMemo(() => toOptions(index.participants, "All participants"), [index.participants]);
   const monthOptions = useMemo(() => toOptions(index.months, "All months"), [index.months]);
-  const normalizedSearch = search.trim().toLowerCase();
+  const normalizedSearch = search.trim();
 
-  const filteredMeetings = index.meetings.filter((meeting) => {
-    if (pendingReviewOnly && pendingReviewItems([...meeting.actions, ...meeting.decisions]).length === 0) {
+  const filteredMeetings = meetings.filter((meeting) => {
+    if (
+      pendingReviewOnly &&
+      ![...meeting.actions, ...meeting.decisions].some(
+        (item) => item.reviewStatus === "needs_review" || pendingReviewVisibleKeys.has(assertionActionKey(item)),
+      )
+    ) {
       return false;
     }
     if (participant !== "all" && !meeting.participants.includes(participant)) {
@@ -306,7 +266,15 @@ export function MeetingsIndex({
   });
 
   const selectedMeeting =
-    filteredMeetings.find((meeting) => meeting.id === selectedId) ?? filteredMeetings[0] ?? index.meetings[0] ?? null;
+    filteredMeetings.find((meeting) => meeting.id === selectedId) ?? filteredMeetings[0] ?? meetings[0] ?? null;
+  const visibleDetailActions = useMemo(
+    () => (meetingDetail ? meetingDetail.actions.filter((item) => itemMatchesSearch(item, normalizedSearch)) : []),
+    [meetingDetail, normalizedSearch],
+  );
+  const visibleDetailDecisions = useMemo(
+    () => (meetingDetail ? meetingDetail.decisions.filter((item) => itemMatchesSearch(item, normalizedSearch)) : []),
+    [meetingDetail, normalizedSearch],
+  );
 
   useEffect(() => {
     if (!meetingDetail) {
@@ -373,69 +341,77 @@ export function MeetingsIndex({
     setScrollRequest((current) => ({ time, token: (current?.token ?? 0) + 1 }));
   }
 
-  async function postReview(operation: ReviewOperation, items: ReviewPayloadItem[]) {
-    if (items.length === 0) {
-      setActionMessage("No pending review items with assertion IDs.");
-      return;
-    }
+  function patchMeetingReviewItems(operation: ReviewOperation, payloadItems: ReviewPayloadItem[]) {
+    setMeetings((current) =>
+      current.map((meeting) => {
+        const actions = applyReviewToItems(meeting.actions, operation, payloadItems);
+        const decisions = applyReviewToItems(meeting.decisions, operation, payloadItems);
+        return { ...meeting, actions, decisions, actionCount: actions.length, decisionCount: decisions.length };
+      }),
+    );
+    setMeetingDetail((current) =>
+      current
+        ? (() => {
+            const actions = applyReviewToItems(current.actions, operation, payloadItems);
+            const decisions = applyReviewToItems(current.decisions, operation, payloadItems);
+            return { ...current, actions, decisions, actionCount: actions.length, decisionCount: decisions.length };
+          })()
+        : current,
+    );
+  }
 
-    setReviewPending(true);
+  function patchMeetingActionDone(assertionId: string) {
+    setMeetings((current) =>
+      current.map((meeting) => ({
+        ...meeting,
+        actions: applyActionDoneToItems(meeting.actions, [assertionId]),
+      })),
+    );
+    setMeetingDetail((current) => (current ? { ...current, actions: applyActionDoneToItems(current.actions, [assertionId]) } : current));
+  }
+
+  function postReview(operation: ReviewOperation, items: MeetingReviewItem[]) {
     setActionMessage(null);
-    try {
-      const response = await fetch("/api/meeting-review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation, items }),
-      });
-      const payload = (await response.json()) as ActionResponse;
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.ok ? `HTTP ${response.status}` : payload.error);
-      }
-      setActionMessage(payload.summary);
-      window.location.reload();
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setReviewPending(false);
-    }
+    void assertionActions.reviewItems(operation, items, {
+      pendingOnly: true,
+      emptyMessage: "No pending review items with assertion IDs.",
+      onSuccess: (_payload, payloadItems) => patchMeetingReviewItems(operation, payloadItems),
+      onMessage: items.length > 1 ? setActionMessage : undefined,
+    });
   }
 
   async function reassignAction(assertionId: string, assignee: string) {
-    setReviewPending(true);
     setActionMessage(null);
-    try {
-      const response = await fetch("/api/meeting-review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation: "reassign_action", assertionId, assignee }),
-      });
-      const payload = (await response.json()) as ActionResponse;
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.ok ? `HTTP ${response.status}` : payload.error);
-      }
-      const reassignPayload = payload.payload as ReassignPayload | undefined;
-      if (reassignPayload?.reassigned !== 1 || !reassignPayload.assignee) {
-        setActionMessage(payload.summary || "No action was reassigned.");
-        return false;
-      }
-      setMeetingDetail((current) =>
-        current
-          ? {
-              ...current,
-              actions: current.actions.map((item) =>
-                item.assertionId === assertionId ? { ...item, assignee: reassignPayload.assignee ?? assignee } : item,
-              ),
-            }
-          : current,
-      );
-      setActionMessage(payload.summary);
-      return true;
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : String(error));
-      return false;
-    } finally {
-      setReviewPending(false);
+    return assertionActions.reassignAction(assertionId, assignee, {
+      onSuccess: (reassignPayload: ReassignPayload) => {
+        const nextAssignee = reassignPayload.assignee ?? assignee;
+        setMeetings((current) =>
+          current.map((meeting) => ({
+            ...meeting,
+            actions: meeting.actions.map((item) => (item.assertionId === assertionId ? { ...item, assignee: nextAssignee } : item)),
+          })),
+        );
+        setMeetingDetail((current) =>
+          current
+            ? {
+                ...current,
+                actions: current.actions.map((item) => (item.assertionId === assertionId ? { ...item, assignee: nextAssignee } : item)),
+              }
+            : current,
+        );
+      },
+    });
+  }
+
+  function markActionDone(item: MeetingReviewItem) {
+    if (!item.assertionId) {
+      setActionMessage("This action does not have a database assertion ID.");
+      return;
     }
+    setActionMessage(null);
+    void assertionActions.markActionDone(item, {
+      onSuccess: () => patchMeetingActionDone(item.assertionId as string),
+    });
   }
 
   function reviewItem(operation: ReviewOperation, item: MeetingReviewItem) {
@@ -443,14 +419,13 @@ export function MeetingsIndex({
       setActionMessage("This item does not have a database assertion ID.");
       return;
     }
-    if (operation === "reject" && !window.confirm(`Reject and delete ${item.label}?`)) {
-      return;
-    }
-    void postReview(operation, [{ kind: item.kind, assertionId: item.assertionId }]);
+    void assertionActions.reviewItem(operation, item, {
+      onSuccess: (_payload, payloadItems) => patchMeetingReviewItems(operation, payloadItems),
+    });
   }
 
   function acceptPending(items: MeetingReviewItem[]) {
-    void postReview("accept", reviewPayloadItems(pendingReviewItems(items)));
+    postReview("accept", pendingReviewItems(items));
   }
 
   useEffect(() => {
@@ -486,15 +461,12 @@ export function MeetingsIndex({
   return (
     <div className="meetings-shell">
       <div className="meetings-controls">
-        <label className="task-search">
-          <span className="sr-only">Search meetings</span>
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search title, participant, date, recording"
-          />
-        </label>
+        <SearchControl
+          value={search}
+          onChange={setSearch}
+          placeholder="Search title, participant, action, decision"
+          resultSummary={`${filteredMeetings.length} of ${meetings.length} meetings`}
+        />
         <CompactSelect
           value={participant}
           options={participantOptions}
@@ -513,7 +485,7 @@ export function MeetingsIndex({
 
       <div className="routing-toolbar-meta">
         <span>
-          Showing {filteredMeetings.length} of {index.meetings.length} meetings
+          Showing {filteredMeetings.length} of {meetings.length} meetings
         </span>
         <span>Index generated {formatDateTime(index.generatedAt)}</span>
         <span>{index.transcriptCount} transcripts tracked</span>
@@ -577,7 +549,7 @@ export function MeetingsIndex({
                   <button
                     type="button"
                     className="action-trigger"
-                    disabled={reviewPending || !hasAcceptablePendingReview([...selectedMeeting.actions, ...selectedMeeting.decisions])}
+                    disabled={!hasAcceptablePendingReview([...selectedMeeting.actions, ...selectedMeeting.decisions])}
                     onClick={() => acceptPending([...selectedMeeting.actions, ...selectedMeeting.decisions])}
                   >
                     Accept pending
@@ -662,7 +634,7 @@ export function MeetingsIndex({
                 <button
                   type="button"
                   className="action-trigger"
-                  disabled={reviewPending || !hasAcceptablePendingReview([...meetingDetail.actions, ...meetingDetail.decisions])}
+                  disabled={!hasAcceptablePendingReview([...meetingDetail.actions, ...meetingDetail.decisions])}
                   onClick={() => acceptPending([...meetingDetail.actions, ...meetingDetail.decisions])}
                 >
                   Accept pending
@@ -682,26 +654,30 @@ export function MeetingsIndex({
               <div className="meeting-review-column">
                 <ReviewSection
                   title="Actions"
-                  count={meetingDetail.actionCount}
+                  count={visibleDetailActions.length}
                   emptyText="No actions extracted."
-                  items={meetingDetail.actions}
+                  items={visibleDetailActions}
                   onEvidenceClick={openEvidence}
                   onReview={reviewItem}
                   onReassign={reassignAction}
-                  pending={reviewPending}
+                  onMarkDone={markActionDone}
+                  getActionState={assertionActions.getActionState}
+                  pending={false}
                   focusedItemId={focusedItemId}
                   meetingParticipants={meetingDetail.participants}
                   assigneeIdentities={assigneeIdentities}
                 />
                 <ReviewSection
                   title="Decisions"
-                  count={meetingDetail.decisionCount}
+                  count={visibleDetailDecisions.length}
                   emptyText="No decisions extracted."
-                  items={meetingDetail.decisions}
+                  items={visibleDetailDecisions}
                   onEvidenceClick={openEvidence}
                   onReview={reviewItem}
                   onReassign={reassignAction}
-                  pending={reviewPending}
+                  onMarkDone={markActionDone}
+                  getActionState={assertionActions.getActionState}
+                  pending={false}
                   focusedItemId={focusedItemId}
                   meetingParticipants={meetingDetail.participants}
                   assigneeIdentities={assigneeIdentities}

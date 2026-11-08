@@ -1,13 +1,28 @@
 const DISPLAY_LOCALE = "en-GB";
 const DISPLAY_TIME_ZONE = "Europe/Rome";
+const CIVIL_DATE_TIME_ZONE = "UTC";
 
-function parseDisplayDate(value: string | null) {
+function parseCivilDate(value: string | null) {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})/u);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  const parsed = new Date(Date.UTC(year, month - 1, day, 12));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day ? parsed : null;
+}
+
+function parseDisplayDateTime(value: string | number | null) {
   if (!value || value === "none") {
     return null;
   }
 
-  const normalized = /^\d{4}-\d{2}-\d{2}$/u.test(value) ? `${value}T00:00:00` : value;
-  const parsed = new Date(normalized);
+  const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -16,14 +31,14 @@ export function formatDisplayDate(value: string | null, emptyLabel = "n/a") {
     return emptyLabel;
   }
 
-  const parsed = parseDisplayDate(value);
+  const parsed = parseCivilDate(value);
   if (!parsed) {
     return value;
   }
 
   return parsed.toLocaleDateString(DISPLAY_LOCALE, {
     dateStyle: "medium",
-    timeZone: DISPLAY_TIME_ZONE,
+    timeZone: CIVIL_DATE_TIME_ZONE,
   });
 }
 
@@ -32,7 +47,7 @@ export function formatDisplayDayDate(value: string | null, emptyLabel = "n/a") {
     return emptyLabel;
   }
 
-  const parsed = parseDisplayDate(value);
+  const parsed = parseCivilDate(value);
   if (!parsed) {
     return value;
   }
@@ -42,7 +57,7 @@ export function formatDisplayDayDate(value: string | null, emptyLabel = "n/a") {
     day: "numeric",
     month: "short",
     year: "numeric",
-    timeZone: DISPLAY_TIME_ZONE,
+    timeZone: CIVIL_DATE_TIME_ZONE,
   });
 }
 
@@ -51,8 +66,8 @@ export function formatDisplayDateTime(value: string | number | null, emptyLabel 
     return emptyLabel;
   }
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseDisplayDateTime(value);
+  if (!parsed) {
     return String(value);
   }
 

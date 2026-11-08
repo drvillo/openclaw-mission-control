@@ -15,7 +15,7 @@ type DatabaseSync = NodeDatabaseSync;
 const require = createRequire(`${process.cwd()}/package.json`);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 
-type SnapshotRow = {
+export type SnapshotRow = {
   generatedAt: string | null;
   tasks: { count: number; flows: number; findings: number; inbox: number; backlog: number };
   ingress: { total: number; bySource: Record<string, number> };
@@ -248,6 +248,22 @@ export type DashboardSelfEvolutionPacket = {
   canonicalKey: string;
   approvalClassification: string | null;
   approvalClass: string | null;
+  approvalBoundary?: string | null;
+  approvalRequired?: boolean;
+  userValue?: string | null;
+  capabilityHypothesis?: string | null;
+  firstMinimumValuableVersion?: string | null;
+  validationSignal?: string | null;
+  riskOfNotBuilding?: string | null;
+  decision?: string | null;
+  decisionRationale?: string | null;
+  evidenceQuality?: string | null;
+  generatorFeedback?: string | null;
+  questionAnswer?: string | null;
+  durableRule?: string | null;
+  answeredAt?: string | null;
+  manualRunJsonPath?: string | null;
+  implementerReportPath?: string | null;
   evidence: string[];
   rollback: string | null;
   validation: string[];
@@ -299,12 +315,211 @@ export type DashboardSelfEvolution = {
   };
 };
 
+export type DashboardState = {
+  snapshot: SnapshotRow;
+  tasks: DashboardTask[];
+  runtimeTasks: DashboardRuntimeTask[];
+  flows: DashboardFlow[];
+  events: DashboardEvent[];
+  findings: DashboardFinding[];
+  memoryHealth: DashboardMemoryHealth[];
+  cronJobs: DashboardCronJob[];
+  cronRuns: DashboardCronRun[];
+  routingAttempts: DashboardRoutingAttempt[];
+  routingGroups: DashboardRoutingGroup[];
+  selfEvolution: DashboardSelfEvolution;
+  roots: {
+    openclawHome: string;
+    tasksRoot: string;
+    stateDir: string;
+    dbPath: string;
+  };
+};
+
+export type DashboardOpsNextAction = {
+  id: string;
+  source: "self-evolution" | "runtime" | "taskflow" | "cron" | "memory" | "routing" | "audit" | "system";
+  priority: "critical" | "high" | "medium" | "low";
+  title: string;
+  summary: string;
+  owner: string;
+  rationale: string;
+  evidence: string[];
+  href: string | null;
+};
+
+type RankedOpsNextAction = {
+  score: number;
+  item: DashboardOpsNextAction;
+};
+
 function readJson<T>(filePath: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
   } catch {
     return fallback;
   }
+}
+
+function normalizeStatus(value: string | null | undefined) {
+  return value?.trim().toLowerCase().replace(/[\s_-]+/gu, "_") ?? "";
+}
+
+function opsPriority(score: number): DashboardOpsNextAction["priority"] {
+  if (score >= 100) {
+    return "critical";
+  }
+  if (score >= 80) {
+    return "high";
+  }
+  if (score >= 55) {
+    return "medium";
+  }
+  return "low";
+}
+
+function pushOpsCandidate(candidates: RankedOpsNextAction[], score: number, item: Omit<DashboardOpsNextAction, "priority">) {
+  candidates.push({ score, item: { ...item, priority: opsPriority(score) } });
+}
+
+export function buildOpsNextActionItems(state: Pick<DashboardState, "snapshot" | "runtimeTasks" | "flows" | "findings" | "memoryHealth" | "cronJobs" | "selfEvolution">, limit = 2): DashboardOpsNextAction[] {
+  const candidates: RankedOpsNextAction[] = [];
+  const activeProposals = state.selfEvolution.packets.filter((packet) => !packet.attic && !["done", "discarded"].includes(normalizeStatus(packet.status)));
+  const blockedProposal = activeProposals.find((packet) => packet.approvalRequired && !packet.questionAnswer?.trim());
+  if (blockedProposal) {
+    pushOpsCandidate(candidates, 105, {
+      id: `self-evolution-blocked-${blockedProposal.canonicalKey}`,
+      source: "self-evolution",
+      title: "Answer blocked self-evolution proposal",
+      summary: blockedProposal.title,
+      owner: blockedProposal.owner || "main",
+      rationale: "A proposal cannot move until its approval/question boundary is resolved.",
+      evidence: [`Approval boundary: ${blockedProposal.approvalBoundary ?? blockedProposal.approvalClass ?? "required"}`, `Status: ${packetStatusText(blockedProposal.status)}`],
+      href: `/self-evolution/day/${encodeURIComponent(blockedProposal.date)}?packet=${encodeURIComponent(blockedProposal.id)}`,
+    });
+  } else if (activeProposals.length > 0) {
+    const topProposal = [...activeProposals].sort((left, right) => right.value - left.value)[0];
+    pushOpsCandidate(candidates, 72, {
+      id: "self-evolution-review-queue",
+      source: "self-evolution",
+      title: "Review active self-evolution proposals",
+      summary: `${activeProposals.length} proposal${activeProposals.length === 1 ? "" : "s"} awaiting decision or implementation follow-through.`,
+      owner: topProposal.owner || "main",
+      rationale: "Manual self-evolution is intentionally operator-reviewed; active proposals are leverage opportunities until resolved.",
+      evidence: [`Top proposal: ${topProposal.title}`, `Latest run: ${state.selfEvolution.latestDate ?? "unknown"}`],
+      href: state.selfEvolution.latestDate ? `/self-evolution/day/${encodeURIComponent(state.selfEvolution.latestDate)}` : "/self-evolution",
+    });
+  }
+
+  const failedRuntimeTasks = state.runtimeTasks.filter((task) => ["failed", "error"].includes(normalizeStatus(task.status)));
+  if (failedRuntimeTasks.length > 0) {
+    const task = failedRuntimeTasks[0];
+    pushOpsCandidate(candidates, 96, {
+      id: `runtime-failed-${task.taskId}`,
+      source: "runtime",
+      title: "Inspect failed runtime task",
+      summary: task.terminalSummary ?? task.label ?? task.taskId,
+      owner: task.agentId ?? "runtime",
+      rationale: "A failed background task can leave user-visible or maintenance work incomplete.",
+      evidence: [`Status: ${task.status}`, `Task: ${task.taskId}`, task.terminalOutcome ? `Outcome: ${task.terminalOutcome}` : "Source: runtime_tasks"],
+      href: "/ops",
+    });
+  }
+
+  const blockedFlow = state.flows.find((flow) => ["blocked", "waiting", "failed"].includes(normalizeStatus(flow.status)) || Boolean(flow.blockedTaskId));
+  if (blockedFlow) {
+    pushOpsCandidate(candidates, 88, {
+      id: `taskflow-blocked-${blockedFlow.flowId}`,
+      source: "taskflow",
+      title: "Resolve blocked TaskFlow",
+      summary: blockedFlow.blockedSummary ?? blockedFlow.goal ?? blockedFlow.flowId,
+      owner: blockedFlow.ownerKey ?? blockedFlow.controllerId ?? "taskflow",
+      rationale: "Durable workflows are designed to wait explicitly; a blocked flow is often the next operational handoff.",
+      evidence: [`Flow: ${blockedFlow.flowId}`, `Status: ${blockedFlow.status}`, blockedFlow.blockedTaskId ? `Blocked task: ${blockedFlow.blockedTaskId}` : "Source: task_flows"],
+      href: "/ops",
+    });
+  }
+
+  const failingCron = state.cronJobs.find((job) => job.enabled && ["failed", "error", "timeout"].includes(normalizeStatus(job.lastRunStatus)));
+  if (failingCron) {
+    pushOpsCandidate(candidates, 84, {
+      id: `cron-failed-${failingCron.jobId}`,
+      source: "cron",
+      title: "Check failing cron job",
+      summary: failingCron.name,
+      owner: failingCron.agentId,
+      rationale: "Enabled scheduled maintenance with a failed last run can silently degrade core operations.",
+      evidence: [`Last status: ${failingCron.lastRunStatus ?? "unknown"}`, `Schedule: ${failingCron.scheduleLabel}`, `Job: ${failingCron.jobId}`],
+      href: "/ops",
+    });
+  }
+
+  const unhealthyMemory = state.memoryHealth.find((workspace) => normalizeStatus(workspace.status) !== "ok" || !workspace.qmdHealthy || !workspace.hasTodayDaily);
+  if (unhealthyMemory) {
+    pushOpsCandidate(candidates, 66, {
+      id: `memory-health-${unhealthyMemory.workspaceId}`,
+      source: "memory",
+      title: "Review memory health gap",
+      summary: `${unhealthyMemory.workspaceId}: ${unhealthyMemory.status}`,
+      owner: unhealthyMemory.workspaceId,
+      rationale: "Memory freshness and QMD health directly affect recall quality for agents and self-evolution evidence.",
+      evidence: [`Today daily: ${unhealthyMemory.hasTodayDaily ? "yes" : "no"}`, `QMD: ${unhealthyMemory.qmdHealthy ? "ok" : unhealthyMemory.qmdMessage}`, `Path: ${unhealthyMemory.pathStatus}`],
+      href: "/ops",
+    });
+  }
+
+  const severeFinding = state.findings.find((finding) => ["critical", "high", "error"].includes(normalizeStatus(finding.severity)));
+  if (severeFinding) {
+    pushOpsCandidate(candidates, 82, {
+      id: `audit-${severeFinding.findingId}`,
+      source: "audit",
+      title: "Triage audit finding",
+      summary: severeFinding.detail,
+      owner: severeFinding.kind,
+      rationale: "High-severity audit findings should outrank routine dashboard scanning.",
+      evidence: [`Severity: ${severeFinding.severity}`, `Code: ${severeFinding.code}`, `Kind: ${severeFinding.kind}`],
+      href: "/ops",
+    });
+  }
+
+  if (state.snapshot.routing.failures > 0 || state.snapshot.routing.pending > 0) {
+    const failures = state.snapshot.routing.failures;
+    pushOpsCandidate(candidates, failures > 0 ? 78 : 58, {
+      id: "routing-attention",
+      source: "routing",
+      title: failures > 0 ? "Inspect routing failures" : "Review pending routing attempts",
+      summary: `Failures: ${state.snapshot.routing.failures} · Pending: ${state.snapshot.routing.pending}`,
+      owner: "main",
+      rationale: "Routing issues can send work to the wrong owner or leave delegated work incomplete.",
+      evidence: [`Total routing attempts: ${state.snapshot.routing.total}`, `Compliant: ${state.snapshot.routing.compliant}`],
+      href: "/ops",
+    });
+  }
+
+  if (candidates.length === 0) {
+    return [
+      {
+        id: "ops-no-immediate-blocker",
+        source: "system",
+        priority: "low",
+        title: "No obvious ops blocker",
+        summary: "No failed runtime task, blocked flow, failing cron, high audit finding, or self-evolution blocker is visible in the current snapshot.",
+        owner: "main",
+        rationale: "This card is read-only and ranks only known local Mission Control state; refresh if the snapshot may be stale.",
+        evidence: [`Snapshot generated: ${state.snapshot.generatedAt ?? "unknown"}`],
+        href: null,
+      },
+    ];
+  }
+
+  return candidates
+    .sort((left, right) => right.score - left.score || left.item.title.localeCompare(right.item.title))
+    .slice(0, limit)
+    .map((candidate) => candidate.item);
+}
+
+function packetStatusText(status: string | null | undefined) {
+  return status?.trim() || "review";
 }
 
 function openDb(): DatabaseSync | null {
@@ -377,13 +592,15 @@ function readMarkdownFile(filePath: string | null) {
 }
 
 
-const ACTIVE_SELF_EVOLUTION_CRON_ID = "1f7cd9e2-ac47-4437-a3f1-f000ec1e50b6";
-const SELF_EVOLUTION_DOCS_ROOT = path.join(OBSIDIAN_VAULT, "System", "OpenClaw Self-Evolution");
-const REVIEW_PACKETS_DIR = path.join(SELF_EVOLUTION_DOCS_ROOT, "Review Packets");
-const REVIEW_PACKETS_INDEX = path.join(REVIEW_PACKETS_DIR, "Index.md");
-const CANONICAL_PACKETS_DIR = path.join(REVIEW_PACKETS_DIR, "Packets");
-const PACKET_ATTIC_DIR = path.join(REVIEW_PACKETS_DIR, "Attic");
+const RETIRED_SELF_EVOLUTION_CRON_ID = "1f7cd9e2-ac47-4437-a3f1-f000ec1e50b6";
 const MEMORY_SELF_EVOLUTION_ROOT = path.join(OBSIDIAN_VAULT, "System", "OpenClaw Memory", "Self-Evolution");
+const MANUAL_RUNS_DIR = path.join(MEMORY_SELF_EVOLUTION_ROOT, "Manual Runs");
+const IMPLEMENTER_REPORTS_DIR = path.join(MEMORY_SELF_EVOLUTION_ROOT, "Implementer Reports");
+const RETIRED_WIRING_DIR = path.join(MEMORY_SELF_EVOLUTION_ROOT, "Retired Wiring");
+const RETIRED_CRON_MANIFEST = path.join(RETIRED_WIRING_DIR, "daily-supervised-self-evolution-review-cron-2026-06-22.json");
+const MANUAL_GUIDANCE_INDEX = path.join(MEMORY_SELF_EVOLUTION_ROOT, "Dual-Entity Operating Contract.md");
+const CANONICAL_PACKETS_DIR = MANUAL_RUNS_DIR;
+const PACKET_ATTIC_DIR = path.join(RETIRED_WIRING_DIR, "Discarded Manual Proposals");
 
 function slugifyPacketKey(value: string) {
   return value
@@ -427,13 +644,10 @@ function parsePacketFrontmatter(markdown: string | null): Record<string, string>
 
 function packetKeysFromImplementationText(text: string) {
   const keys = new Set<string>();
-  for (const packetId of text.matchAll(/SE-REVIEW-\d+/gu)) {
-    keys.add(slugifyPacketKey(packetId[0]));
-  }
   for (const match of text.matchAll(/Canonical key:\s*([^\n]+)/giu)) {
     keys.add(slugifyPacketKey(match[1].trim()));
   }
-  for (const match of text.matchAll(/SE-REVIEW-\d+\s*\/\s*([A-Za-z0-9:_-]+)/gu)) {
+  for (const match of text.matchAll(/Proposal ID:\s*([^\n]+)/giu)) {
     keys.add(slugifyPacketKey(match[1].trim()));
   }
   return keys;
@@ -445,12 +659,10 @@ function loadImplementationTaskStatusByPacketKey(db: DatabaseSync | null) {
     `
       SELECT id, title, status, details_ref as detailsRef, raw_json as rawJson
       FROM task_snapshots
-      WHERE title LIKE 'Implement self-evolution packet:%'
-         OR title LIKE 'Implement self-evolution improvement:%'
-         OR title LIKE 'Implement SE-REVIEW-%'
-         OR raw_json LIKE '%self-evolution packet%'
-         OR raw_json LIKE '%self-evolution improvement%'
-         OR raw_json LIKE '%SE-REVIEW-%'
+      WHERE title LIKE 'Implement self-evolution proposal:%'
+         OR raw_json LIKE '%self-evolution proposal%'
+         OR raw_json LIKE '%dual-entity self-evolution%'
+         OR raw_json LIKE '%Proposal ID:%'
       ORDER BY recorded_at DESC, created_on DESC, id DESC
       LIMIT 1000;
     `,
@@ -459,7 +671,7 @@ function loadImplementationTaskStatusByPacketKey(db: DatabaseSync | null) {
   for (const row of rows) {
     const detailBody = readDetailBody(detailRefToPath(row.detailsRef)) ?? "";
     const text = `${row.title}\n${row.rawJson}\n${detailBody}`;
-    if (!/Implement (?:self-evolution (?:packet|improvement)|SE-REVIEW-)|Packet ID:\s*SE-REVIEW-|Improvement ID:|Canonical key:/u.test(text)) {
+    if (!/Implement self-evolution proposal:|Proposal ID:|Canonical key:/u.test(text)) {
       continue;
     }
     for (const key of packetKeysFromImplementationText(text)) {
@@ -469,18 +681,9 @@ function loadImplementationTaskStatusByPacketKey(db: DatabaseSync | null) {
         byPacketKey.set(key, row.status);
       }
     }
-    const titleMatch = row.title.match(/^Implement self-evolution packet:\s*(.+)$/u);
+    const titleMatch = row.title.match(/^Implement self-evolution proposal:\s*(.+)$/u);
     if (titleMatch) {
       const titleKey = slugifyPacketKey(titleMatch[1]);
-      if (row.status === "done") {
-        byPacketKey.set(titleKey, "done");
-      } else if (!byPacketKey.has(titleKey)) {
-        byPacketKey.set(titleKey, row.status);
-      }
-    }
-    const improvementTitleMatch = row.title.match(/^Implement self-evolution improvement:\s*(.+)$/u);
-    if (improvementTitleMatch) {
-      const titleKey = slugifyPacketKey(improvementTitleMatch[1]);
       if (row.status === "done") {
         byPacketKey.set(titleKey, "done");
       } else if (!byPacketKey.has(titleKey)) {
@@ -559,7 +762,7 @@ export function applySelfEvolutionImplementationTaskStatuses(packets: DashboardS
 
 function isOpenSelfEvolutionImprovement(packet: DashboardSelfEvolutionPacket) {
   const status = packet.status?.trim().toLowerCase() ?? "";
-  return !packet.attic && !packet.id.startsWith("SE-REVIEW-") && status !== "discarded" && status !== "done";
+  return !packet.attic && status !== "discarded" && status !== "done";
 }
 
 function selfEvolutionEffortWeight(value: string | null | undefined) {
@@ -646,49 +849,6 @@ export function extractPacketSection(noteMarkdown: string | null, packetId: stri
   return `${heading}\n\n${match[1].trim()}`.trim();
 }
 
-function packetDocument(label: string, notePath: string | null, noteMarkdown: string | null, packetId: string): DashboardSelfEvolutionLink | null {
-  if (!notePath) {
-    return null;
-  }
-  const markdown = extractPacketSection(noteMarkdown, packetId);
-  return {
-    label,
-    path: notePath,
-    href: obsidianHref(notePath),
-    exists: Boolean(markdown),
-    vaultPath: vaultRelative(notePath),
-    title: label,
-    markdown,
-    sectionId: packetId,
-  };
-}
-
-const SELF_EVOLUTION_DOMAINS = new Set(["knowledge", "interaction", "subagent_quality", "mission_control_product", "leverage", "runtime_system"]);
-
-function normalizeSelfEvolutionDomain(value: unknown, analyzer: string | null) {
-  const raw = typeof value === "string" ? value : analyzer ?? "";
-  const normalized = raw.trim().toLowerCase().replace(/[\s-]+/gu, "_");
-  if (SELF_EVOLUTION_DOMAINS.has(normalized)) {
-    return normalized;
-  }
-  if (normalized.includes("knowledge")) {
-    return "knowledge";
-  }
-  if (normalized.includes("interaction")) {
-    return "interaction";
-  }
-  if (normalized.includes("subagent")) {
-    return "subagent_quality";
-  }
-  if (normalized.includes("mission_control") || normalized.includes("product")) {
-    return "mission_control_product";
-  }
-  if (normalized.includes("leverage") || normalized.includes("big_idea") || normalized.includes("small_fix")) {
-    return "leverage";
-  }
-  return "runtime_system";
-}
-
 function deriveSelfEvolutionComplexity(value: unknown, domain: string, summary: string) {
   const explicit = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (explicit === "low" || explicit === "medium" || explicit === "high") {
@@ -726,29 +886,6 @@ function sourceNoteDocument(notePath: string, row: Record<string, unknown>, fall
   } satisfies DashboardSelfEvolutionLink;
 }
 
-const EXPANDED_CATEGORY_COLLECTIONS: Record<string, { json: string; collection: string }> = {
-  knowledge: { json: "knowledge_quality_review.json", collection: "knowledge_quality_findings" },
-  interaction: { json: "interaction_patterns_review.json", collection: "interaction_pattern_hypotheses" },
-  subagent_quality: { json: "subagent_quality_scorecards.json", collection: "subagent_quality_scorecards" },
-  mission_control_product: { json: "mission_control_product_review.json", collection: "mission_control_product_opportunities" },
-  leverage: { json: "big_ideas_and_small_fixes.json", collection: "big_idea_small_fix_proposals" },
-};
-
-function sourceObservationRefs(item: Record<string, unknown>, limit = 3) {
-  const refs: string[] = [];
-  for (const observation of Array.isArray(item.source_observations) ? item.source_observations : []) {
-    const row = asRecord(observation);
-    const ref = typeof row.source_ref === "string" ? row.source_ref : typeof row.observation_id === "string" ? row.observation_id : null;
-    if (ref && !refs.includes(ref)) {
-      refs.push(ref);
-    }
-    if (refs.length >= limit) {
-      break;
-    }
-  }
-  return refs;
-}
-
 function firstString(...values: unknown[]) {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) {
@@ -756,59 +893,6 @@ function firstString(...values: unknown[]) {
     }
   }
   return null;
-}
-
-function expandedAnalyzerTitle(domain: string, item: Record<string, unknown>) {
-  return (
-    firstString(
-      item.title,
-      item.summary,
-      item.hypothesis,
-      item.observed_issue,
-      item.proposed_change,
-      item.proposed_behavior_change,
-      asRecord(item.recommended_followup).summary,
-      item.expected_user_value,
-    ) ?? `${domain} improvement`
-  );
-}
-
-function expandedAnalyzerRawMarkdown(domain: string, item: Record<string, unknown>, title: string) {
-  const lines = [`### ${typeof item.id === "string" ? item.id : "unknown"} - ${title}`, ""];
-  const fields: Array<[string, unknown]> = [
-    ["Analyzer", item.analyzer],
-    ["Domain", domain],
-    ["Owner", item.owner ?? item.proposed_owner],
-    ["Risk", item.risk],
-    ["Approval", item.approval_class ?? item.decision_needed],
-    ["Status", item.status],
-    ["Summary", item.summary],
-    ["Observed issue", item.observed_issue],
-    ["Hypothesis", item.hypothesis],
-    ["Proposed change", item.proposed_change ?? item.proposed_behavior_change],
-    ["Recommended follow-up", asRecord(item.recommended_followup).summary],
-    ["Expected user value", item.expected_user_value],
-    ["Expected benefit", item.expected_benefit],
-    ["Proposal class", item.proposal_class],
-    ["Implementation shape", item.implementation_shape ?? item.proposed_solution_shape],
-    ["Rollback", item.rollback ?? item.mutation_boundary],
-  ];
-  for (const [label, value] of fields) {
-    if (typeof value === "string" && value.trim()) {
-      lines.push(`- ${label}: ${value.trim()}`);
-    } else if (Array.isArray(value) && value.length > 0) {
-      lines.push(`- ${label}: ${value.map(String).join("; ")}`);
-    }
-  }
-  const evidence = sourceObservationRefs(item, 8);
-  if (evidence.length > 0) {
-    lines.push("", "Evidence refs:", ...evidence.map((ref) => `- ${ref}`));
-  }
-  const validation = stringArray(item.validation);
-  if (validation.length > 0) {
-    lines.push("", "Validation:", ...validation.map((step) => `- ${step}`));
-  }
-  return lines.join("\n");
 }
 
 function clampSelfEvolutionValue(value: number) {
@@ -872,266 +956,258 @@ function deriveSelfEvolutionValue(item: Record<string, unknown>, domain: string,
   return clampSelfEvolutionValue(value);
 }
 
-function parseExpandedAnalyzerItem(
-  category: Record<string, unknown>,
-  item: Record<string, unknown>,
-  {
-    date,
-    generatedAt,
-    note,
-    notePath,
-    reviewTask,
-  }: {
-    date: string;
-    generatedAt: string | null;
-    note: DashboardSelfEvolutionLink;
-    notePath: string;
-    reviewTask: DashboardSelfEvolutionReviewTask | null;
-  },
-) {
-  const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : null;
-  if (!id) {
-    return null;
-  }
-  const domain = normalizeSelfEvolutionDomain(category.key, typeof item.analyzer === "string" ? item.analyzer : null);
-  const title = expandedAnalyzerTitle(domain, item);
-  const summary = firstString(item.summary, item.observed_issue, item.hypothesis, item.expected_user_value, title) ?? title;
-  const sourceNote = firstString(category.markdown_path, category.json_path, note.path);
-  const normalizedStatus = firstString(item.status);
-  const evidence = sourceObservationRefs(item);
-  return parseSelfEvolutionImprovementRow(
-    {
-      id,
-      title,
-      summary,
-      domain,
-      analyzer: firstString(item.analyzer, category.key),
-      owner: firstString(item.owner, item.proposed_owner, "main"),
-      risk: firstString(item.risk, "unknown"),
-      complexity: item.complexity,
-      approval_class: firstString(item.approval_class, item.decision_needed, "main_review"),
-      status: normalizedStatus === "done" || normalizedStatus === "discarded" || normalizedStatus === "approved" ? normalizedStatus : "review",
-      dedupe_key: id,
-      evidence,
-      value: deriveSelfEvolutionValue(item, domain, evidence),
-      rollback: firstString(item.rollback, item.mutation_boundary),
-      validation: stringArray(item.validation),
-      source_note: sourceNote,
-      raw_markdown: expandedAnalyzerRawMarkdown(domain, item, title),
-    },
-    { date, generatedAt, note, notePath, reviewTask },
-  );
-}
-
-function expandedCategoryJsonPath(category: Record<string, unknown>) {
-  const explicit = firstString(category.json_path);
-  if (explicit) {
-    return explicit;
-  }
-  const key = firstString(category.key);
-  const markdownPath = firstString(category.markdown_path);
-  const spec = key ? EXPANDED_CATEGORY_COLLECTIONS[key] : null;
-  if (!spec) {
-    return null;
-  }
-  if (markdownPath) {
-    return path.join(path.dirname(markdownPath), spec.json);
-  }
-  return null;
-}
-
-function parseExpandedAnalyzerRows(
-  metadata: Record<string, unknown>,
-  context: {
-    date: string;
-    generatedAt: string | null;
-    note: DashboardSelfEvolutionLink;
-    notePath: string;
-    reviewTask: DashboardSelfEvolutionReviewTask | null;
-  },
-) {
-  const expandedReview = asRecord(metadata.expanded_review);
-  const categories = Array.isArray(expandedReview.categories) ? expandedReview.categories.map(asRecord) : [];
-  const packets: DashboardSelfEvolutionPacket[] = [];
-  for (const category of categories) {
-    const key = firstString(category.key);
-    const spec = key ? EXPANDED_CATEGORY_COLLECTIONS[key] : null;
-    const jsonPath = expandedCategoryJsonPath(category);
-    if (!spec || !jsonPath || !fs.existsSync(jsonPath)) {
-      continue;
-    }
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    const collection = parsed[spec.collection];
-    const rows: unknown[] = Array.isArray(collection) ? collection : [];
-    for (const row of rows) {
-      const packet = parseExpandedAnalyzerItem({ ...category, json_path: jsonPath }, asRecord(row), context);
-      if (packet) {
-        packets.push(packet);
-      }
-    }
-  }
-  return packets;
-}
-
-function parseSelfEvolutionImprovementRow(
-  row: unknown,
-  {
-    date,
-    generatedAt,
-    note,
-    notePath,
-    reviewTask,
-  }: {
-    date: string;
-    generatedAt: string | null;
-    note: DashboardSelfEvolutionLink;
-    notePath: string;
-    reviewTask: DashboardSelfEvolutionReviewTask | null;
-  },
-): DashboardSelfEvolutionPacket | null {
-  const improvement = asRecord(row);
-  const id = typeof improvement.id === "string" && improvement.id.trim() ? improvement.id : null;
-  const title = typeof improvement.title === "string" && improvement.title.trim() ? improvement.title : typeof improvement.summary === "string" ? improvement.summary : null;
-  if (!id || !title) {
-    return null;
-  }
-  const analyzer = typeof improvement.analyzer === "string" ? improvement.analyzer : null;
-  const domain = normalizeSelfEvolutionDomain(improvement.domain, analyzer);
-  const summary = typeof improvement.summary === "string" && improvement.summary.trim() ? improvement.summary : title;
-  const dedupeKey = typeof improvement.dedupe_key === "string" ? improvement.dedupe_key : typeof improvement.canonical_key === "string" ? improvement.canonical_key : id;
-  const canonicalKey = selfEvolutionPacketKey({ id, title, dedupeKey });
-  const approvalClass = typeof improvement.approval_class === "string" ? improvement.approval_class : typeof improvement.approval_classification === "string" ? improvement.approval_classification : null;
-  const evidence = stringArray(improvement.evidence);
-  const rawMarkdown =
-    typeof improvement.raw_markdown === "string" && improvement.raw_markdown.trim()
-      ? improvement.raw_markdown
-      : `### ${id} - ${title}\n\n${summary}`;
-
-  return {
-    date,
-    dates: [date],
-    generatedAt,
-    id,
-    title,
-    summary,
-    domain,
-    analyzer,
-    owner: typeof improvement.owner === "string" && improvement.owner.trim() ? improvement.owner : "main",
-    value: deriveSelfEvolutionValue(improvement, domain, evidence),
-    risk: typeof improvement.risk === "string" && improvement.risk.trim() ? improvement.risk : "unknown",
-    complexity: deriveSelfEvolutionComplexity(improvement.complexity, domain, summary),
-    status: typeof improvement.status === "string" ? improvement.status : "review",
-    dedupeKey,
-    canonicalKey,
-    approvalClassification: approvalClass,
-    approvalClass,
-    evidence,
-    rollback: typeof improvement.rollback === "string" ? improvement.rollback : null,
-    validation: stringArray(improvement.validation),
-    sourceNote: typeof improvement.source_note === "string" ? improvement.source_note : note.path,
-    note,
-    reviewTask,
-    document: readCanonicalPacketDocument(canonicalKey, sourceNoteDocument(notePath, improvement, rawMarkdown)),
-    attic: false,
-  };
-}
-
-function parseLegacyReviewPacketRow(
-  row: unknown,
-  notePath: string,
-  noteMarkdown: string | null,
-  date: string,
-  generatedAt: string | null,
-  note: DashboardSelfEvolutionLink,
-  reviewTask: DashboardSelfEvolutionReviewTask | null,
-) {
-  const packet = asRecord(row);
-  const id = typeof packet.id === "string" ? packet.id : "unknown";
-  const title = typeof packet.title === "string" ? packet.title : "Untitled packet";
-  const dedupeKey = typeof packet.dedupe_key === "string" ? packet.dedupe_key : null;
-  const canonicalKey = selfEvolutionPacketKey({ id, title, dedupeKey });
-  const legacyDocument = packetDocument(`${id} · ${title}`, notePath, noteMarkdown, id);
-  const approvalClass = typeof packet.approval_classification === "string" ? packet.approval_classification : null;
-  return {
-    date,
-    dates: [date],
-    generatedAt,
-    id,
-    title,
-    summary: title,
-    domain: "runtime_system",
-    analyzer: "legacy_review_packets",
-    owner: "main",
-    value: deriveSelfEvolutionValue(packet, "runtime_system", []),
-    risk: "unknown",
-    complexity: deriveSelfEvolutionComplexity(null, "runtime_system", title),
-    status: typeof packet.status === "string" ? packet.status : null,
-    dedupeKey,
-    canonicalKey,
-    approvalClassification: approvalClass,
-    approvalClass,
-    evidence: [],
-    rollback: null,
-    validation: [],
-    sourceNote: note.path,
-    note,
-    reviewTask,
-    document: readCanonicalPacketDocument(canonicalKey, legacyDocument),
-    attic: false,
-  } satisfies DashboardSelfEvolutionPacket;
-}
-
-function reviewPacketNotes(): string[] {
-  if (!fs.existsSync(REVIEW_PACKETS_DIR)) {
+function manualRunJsonFiles(): string[] {
+  if (!fs.existsSync(MANUAL_RUNS_DIR)) {
     return [];
   }
   return fs
-    .readdirSync(REVIEW_PACKETS_DIR)
-    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
-    .sort()
-    .reverse()
-    .map((name) => path.join(REVIEW_PACKETS_DIR, name));
+    .readdirSync(MANUAL_RUNS_DIR)
+    .filter((name) => name.endsWith(".json") && !name.endsWith("-implementer-review.json"))
+    .map((name) => path.join(MANUAL_RUNS_DIR, name))
+    .sort((left, right) => {
+      const leftMtime = fs.statSync(left).mtimeMs;
+      const rightMtime = fs.statSync(right).mtimeMs;
+      return rightMtime - leftMtime || right.localeCompare(left);
+    });
 }
 
-function parseSelfEvolutionMetadata(notePath: string | null): Record<string, unknown> {
-  if (!notePath || !fs.existsSync(notePath)) {
+function readJsonFile(filePath: string | null): Record<string, unknown> {
+  if (!filePath || !fs.existsSync(filePath)) {
     return {};
   }
   try {
-    const text = fs.readFileSync(notePath, "utf8");
-    const match = text.match(/<!-- openclaw:self-evolution-run\n([\s\S]*?)\n-->/);
-    if (!match) {
-      return {};
-    }
-    return JSON.parse(match[1]) as Record<string, unknown>;
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
   } catch {
     return {};
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+function manualRunMarkdownPath(jsonPath: string) {
+  return jsonPath.replace(/\.json$/u, ".md");
 }
 
-function parseReviewTask(value: unknown): DashboardSelfEvolutionReviewTask | null {
-  const reviewTask = asRecord(value);
-  const id = typeof reviewTask.id === "string" && reviewTask.id !== "none" ? reviewTask.id : null;
-  if (!id) {
+function implementerReviewSearchDirs() {
+  return [...new Set([MANUAL_RUNS_DIR, IMPLEMENTER_REPORTS_DIR])];
+}
+
+function findImplementerReviewPath(runId: string) {
+  const expected = `${slugifyPacketKey(runId)}-implementer-review.json`;
+  for (const dir of implementerReviewSearchDirs()) {
+    const direct = path.join(dir, expected);
+    if (fs.existsSync(direct)) {
+      return direct;
+    }
+  }
+  for (const dir of implementerReviewSearchDirs()) {
+    if (!fs.existsSync(dir)) {
+      continue;
+    }
+    const match = fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith("-implementer-review.json"))
+      .map((name) => path.join(dir, name))
+      .find((filePath) => readJsonFile(filePath).run_id === runId);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function proposalDecisionById(report: Record<string, unknown>) {
+  const decisions = Array.isArray(report.decisions) ? report.decisions.map(asRecord) : [];
+  const entries: Array<[string, Record<string, unknown>]> = [];
+  for (const decision of decisions) {
+    const id = firstString(decision.proposal_id);
+    if (id) {
+      entries.push([id, decision]);
+    }
+  }
+  return new Map(entries);
+}
+
+function proposalAnswer(proposal: Record<string, unknown>) {
+  const answers = Array.isArray(proposal.francesco_answers) ? proposal.francesco_answers.map(asRecord) : [];
+  const latest = answers[answers.length - 1] ?? null;
+  return {
+    questionAnswer: firstString(latest?.answer) ?? null,
+    durableRule: firstString(latest?.durable_rule) ?? null,
+    answeredAt: firstString(latest?.answered_at) ?? null,
+  };
+}
+
+export function selfEvolutionImplementationFeedbackStatus(proposal: Record<string, unknown>) {
+  const feedback = asRecord(proposal.implementation_feedback);
+  const decision = firstString(feedback.decision)?.trim().toLowerCase() ?? "";
+  return decision === "implemented" || decision === "done" ? "done" : null;
+}
+
+function manualProposalRawMarkdown(proposal: Record<string, unknown>, decision: Record<string, unknown> | null, runId: string) {
+  const lines = [`### ${firstString(proposal.proposal_id) ?? "unknown-proposal"} - ${firstString(proposal.title) ?? "Untitled proposal"}`, ""];
+  const fields: Array<[string, unknown]> = [
+    ["Run", runId],
+    ["Proposal type", proposal.proposal_type],
+    ["Approval boundary", proposal.approval_boundary],
+    ["Summary", proposal.summary],
+    ["User value", proposal.user_value],
+    ["Capability hypothesis", proposal.capability_hypothesis],
+    ["First MVV", proposal.first_minimum_valuable_version],
+    ["Validation signal", proposal.validation_signal],
+    ["Risk", proposal.risk],
+    ["Rollback", proposal.rollback],
+    ["Implementer decision", decision?.decision],
+    ["Decision rationale", decision?.rationale],
+    ["Generator feedback", decision?.generator_feedback],
+  ];
+  for (const [label, value] of fields) {
+    if (typeof value === "string" && value.trim()) {
+      lines.push(`- ${label}: ${value.trim()}`);
+    }
+  }
+  const evidence = stringArray(proposal.evidence_refs);
+  if (evidence.length > 0) {
+    lines.push("", "Evidence refs:", ...evidence.map((ref) => `- ${ref}`));
+  }
+  const validation = stringArray(proposal.validation);
+  if (validation.length > 0) {
+    lines.push("", "Validation:", ...validation.map((step) => `- ${step}`));
+  }
+  const answer = proposalAnswer(proposal);
+  if (answer.questionAnswer) {
+    lines.push("", "Francesco answer:", `- Answered at: ${answer.answeredAt ?? "unknown"}`, `- Answer: ${answer.questionAnswer}`);
+    if (answer.durableRule) {
+      lines.push(`- Durable rule: ${answer.durableRule}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function parseManualProposalRow(
+  proposal: Record<string, unknown>,
+  context: {
+    runId: string;
+    createdAt: string | null;
+    note: DashboardSelfEvolutionLink;
+    notePath: string;
+    jsonPath: string;
+    reportPath: string | null;
+    decision: Record<string, unknown> | null;
+  },
+): DashboardSelfEvolutionPacket | null {
+  const id = firstString(proposal.proposal_id);
+  const title = firstString(proposal.title, proposal.summary);
+  if (!id || !title) {
     return null;
   }
+  const decision = context.decision;
+  const answer = proposalAnswer(proposal);
+  const evidence = stringArray(proposal.evidence_refs);
+  const rawMarkdown = manualProposalRawMarkdown(proposal, decision, context.runId);
+  const approvalBoundary = firstString(proposal.approval_boundary, "none");
+  const approvalRequired = Boolean(decision?.approval_required) || Boolean(approvalBoundary && approvalBoundary !== "none" && !answer.questionAnswer);
+  const status = selfEvolutionImplementationFeedbackStatus(proposal) ?? (answer.questionAnswer && approvalBoundary !== "none" ? "answered" : approvalRequired ? "blocked" : firstString(decision?.decision, "review"));
+  const canonicalKey = selfEvolutionPacketKey({ id, title, dedupeKey: id });
   return {
+    date: context.runId,
+    dates: [context.runId],
+    generatedAt: context.createdAt,
     id,
-    title: typeof reviewTask.title === "string" ? reviewTask.title : null,
-    status: typeof reviewTask.status === "string" ? reviewTask.status : null,
-    detailsRef: typeof reviewTask.details_ref === "string" ? reviewTask.details_ref : null,
-    resultsRef: typeof reviewTask.results_ref === "string" ? reviewTask.results_ref : null,
-    wikiRef: typeof reviewTask.wiki_ref === "string" ? reviewTask.wiki_ref : null,
+    title,
+    summary: firstString(proposal.summary, title) ?? title,
+    domain: firstString(proposal.proposal_type, "proposal") ?? "proposal",
+    analyzer: "dual_entity_manual_run",
+    owner: firstString(proposal.owner, "main") ?? "main",
+    value: deriveSelfEvolutionValue({ ...proposal, value: proposal.value }, firstString(proposal.proposal_type, "proposal") ?? "proposal", evidence),
+    risk: firstString(proposal.risk, "unknown") ?? "unknown",
+    complexity: deriveSelfEvolutionComplexity(proposal.complexity, firstString(proposal.proposal_type, "proposal") ?? "proposal", firstString(proposal.summary, title) ?? title),
+    status,
+    dedupeKey: id,
+    canonicalKey,
+    approvalClassification: approvalBoundary,
+    approvalClass: approvalBoundary,
+    approvalBoundary,
+    approvalRequired,
+    userValue: firstString(proposal.user_value),
+    capabilityHypothesis: firstString(proposal.capability_hypothesis),
+    firstMinimumValuableVersion: firstString(proposal.first_minimum_valuable_version),
+    validationSignal: firstString(proposal.validation_signal),
+    riskOfNotBuilding: firstString(proposal.risk_of_not_building),
+    decision: firstString(decision?.decision),
+    decisionRationale: firstString(decision?.rationale),
+    evidenceQuality: firstString(decision?.evidence_quality),
+    generatorFeedback: firstString(decision?.generator_feedback),
+    questionAnswer: answer.questionAnswer,
+    durableRule: answer.durableRule,
+    answeredAt: answer.answeredAt,
+    manualRunJsonPath: context.jsonPath,
+    implementerReportPath: context.reportPath,
+    evidence,
+    rollback: firstString(proposal.rollback),
+    validation: stringArray(proposal.validation),
+    sourceNote: context.jsonPath,
+    note: context.note,
+    reviewTask: null,
+    document: sourceNoteDocument(context.notePath, { id, source_note: context.notePath, raw_markdown: rawMarkdown }, rawMarkdown),
+    attic: false,
   };
+}
+
+function loadManualSelfEvolutionRuns(runtimeInvocationsByPacketKey: Map<string, DashboardRuntimeInvocation>, implementationStatusByPacketKey: Map<string, string>): DashboardSelfEvolutionRun[] {
+  return manualRunJsonFiles().flatMap((jsonPath) => {
+    const packet = readJsonFile(jsonPath);
+    const runId = firstString(packet.run_id) ?? path.basename(jsonPath, ".json");
+    const createdAt = firstString(packet.created_at);
+    const notePath = fs.existsSync(manualRunMarkdownPath(jsonPath)) ? manualRunMarkdownPath(jsonPath) : jsonPath;
+    const note = selfEvolutionLink(`Manual run · ${runId}`, notePath);
+    const reportPath = findImplementerReviewPath(runId);
+    const report = readJsonFile(reportPath);
+    const decisions = proposalDecisionById(report);
+    const proposals = Array.isArray(packet.proposals) ? packet.proposals.map(asRecord) : [];
+    const packetErrors = stringArray(packet.packet_errors);
+    const reportErrors = stringArray(report.errors);
+    const parsedPackets = proposals
+      .map((proposal) =>
+        parseManualProposalRow(proposal, {
+          runId,
+          createdAt,
+          note,
+          notePath,
+          jsonPath,
+          reportPath,
+          decision: decisions.get(firstString(proposal.proposal_id) ?? "") ?? null,
+        }),
+      )
+      .filter((row): row is DashboardSelfEvolutionPacket => Boolean(row));
+    return [
+      {
+        date: runId,
+        generatedAt: createdAt,
+        allGatesOk: packetErrors.length === 0 && (Object.keys(report).length === 0 || Boolean(report.packet_valid)),
+        packetCount: parsedPackets.length,
+        reviewTask: null,
+        gates: [
+          { name: "manual run packet valid", ok: packetErrors.length === 0 },
+          { name: "implementer feedback available", ok: Boolean(reportPath) },
+          { name: "implementer feedback valid", ok: reportErrors.length === 0 && (Object.keys(report).length === 0 || Boolean(report.packet_valid)) },
+        ],
+        mutatingActions: [],
+        note,
+        packets: sortSelfEvolutionByPriority(
+          applySelfEvolutionImplementationTaskStatuses(
+            parsedPackets.map((proposal) => ({
+              ...proposal,
+              runtimeInvocation: runtimeInvocationsByPacketKey.get(proposal.canonicalKey) ?? null,
+            })),
+            implementationStatusByPacketKey,
+          ),
+        ),
+      } satisfies DashboardSelfEvolutionRun,
+    ];
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function parseRuntimeInvocationMetadata(value: unknown) {
@@ -1207,75 +1283,7 @@ function loadRuntimeInvocations(db: DatabaseSync | null) {
 }
 
 function loadSelfEvolutionRuns(runtimeInvocationsByPacketKey: Map<string, DashboardRuntimeInvocation>, implementationStatusByPacketKey: Map<string, string>): DashboardSelfEvolutionRun[] {
-  return reviewPacketNotes().flatMap((notePath) => {
-    const noteMarkdown = readMarkdownFile(notePath);
-    const metadata = parseSelfEvolutionMetadata(notePath);
-    const gates = asRecord(metadata.gates);
-    const reviewTask = parseReviewTask(metadata.review_task);
-    const improvementRows = Array.isArray(metadata.improvements) ? metadata.improvements : [];
-    const packetRows = Array.isArray(metadata.review_packets) ? metadata.review_packets : [];
-    const actionRows = Array.isArray(metadata.mutating_actions) ? metadata.mutating_actions : [];
-    const date = typeof metadata.date === "string" ? metadata.date : path.basename(notePath, ".md");
-    const note = selfEvolutionLink(`Self-Evolution · ${date}`, notePath);
-    const generatedAt = typeof metadata.generated_at === "string" ? metadata.generated_at : null;
-    const expandedPackets =
-      improvementRows.length === 0
-        ? parseExpandedAnalyzerRows(metadata, {
-            date,
-            generatedAt,
-            note,
-            notePath,
-            reviewTask,
-          })
-        : [];
-    const parsedPackets =
-      improvementRows.length > 0
-        ? improvementRows
-            .map((row) =>
-              parseSelfEvolutionImprovementRow(row, {
-                date,
-                generatedAt,
-                note,
-                notePath,
-                reviewTask,
-              }),
-            )
-            .filter((packet): packet is DashboardSelfEvolutionPacket => Boolean(packet))
-        : expandedPackets.length > 0
-          ? expandedPackets
-          : packetRows.map((row) => parseLegacyReviewPacketRow(row, notePath, noteMarkdown, date, generatedAt, note, reviewTask));
-
-    return [
-      {
-        date,
-        generatedAt,
-        allGatesOk: typeof metadata.all_gates_ok === "boolean" ? metadata.all_gates_ok : null,
-        packetCount:
-          typeof metadata.improvement_count === "number" && metadata.improvement_count > 0
-            ? metadata.improvement_count
-            : parsedPackets.length,
-        reviewTask,
-        gates: Object.entries(gates).map(([name, ok]) => ({ name, ok: Boolean(ok) })),
-        mutatingActions: actionRows.map((row) => {
-          const action = asRecord(row);
-          return {
-            kind: typeof action.kind === "string" ? action.kind : "unknown",
-            target: typeof action.target === "string" ? action.target : "unknown",
-          };
-        }),
-        note,
-        packets: sortSelfEvolutionByPriority(
-          applySelfEvolutionImplementationTaskStatuses(
-            parsedPackets.map((packet) => ({
-              ...packet,
-              runtimeInvocation: runtimeInvocationsByPacketKey.get(packet.canonicalKey) ?? null,
-            })),
-            implementationStatusByPacketKey,
-          ),
-        ),
-      } satisfies DashboardSelfEvolutionRun,
-    ];
-  });
+  return loadManualSelfEvolutionRuns(runtimeInvocationsByPacketKey, implementationStatusByPacketKey);
 }
 
 function loadSelfEvolutionState(db: DatabaseSync | null): DashboardSelfEvolution {
@@ -1283,7 +1291,7 @@ function loadSelfEvolutionState(db: DatabaseSync | null): DashboardSelfEvolution
   const implementationStatusByPacketKey = loadImplementationTaskStatusByPacketKey(db);
   const runtimeInvocationsByPacketKey = runtimeInvocations.reduce<Map<string, DashboardRuntimeInvocation>>((map, invocation) => {
     const packetKey =
-      (invocation.mcObjectType === "self-evolution-improvement" || invocation.mcObjectType === "self-evolution-packet") && invocation.mcObjectId
+      invocation.mcObjectType === "self-evolution-proposal" && invocation.mcObjectId
         ? invocation.mcObjectId
         : null;
     if (packetKey && !map.has(packetKey)) {
@@ -1297,11 +1305,11 @@ function loadSelfEvolutionState(db: DatabaseSync | null): DashboardSelfEvolution
   const packets = sortSelfEvolutionByPriority(dedupeSelfEvolutionPackets(runs.flatMap((run) => run.packets), atticPacketKeys()).filter(isOpenSelfEvolutionImprovement));
 
   return {
-    activeCronId: ACTIVE_SELF_EVOLUTION_CRON_ID,
-    reviewRoot: SELF_EVOLUTION_DOCS_ROOT,
-    reviewPacketsDir: REVIEW_PACKETS_DIR,
-    indexPath: REVIEW_PACKETS_INDEX,
-    indexExists: fs.existsSync(REVIEW_PACKETS_INDEX),
+    activeCronId: RETIRED_SELF_EVOLUTION_CRON_ID,
+    reviewRoot: MEMORY_SELF_EVOLUTION_ROOT,
+    reviewPacketsDir: MANUAL_RUNS_DIR,
+    indexPath: MANUAL_GUIDANCE_INDEX,
+    indexExists: fs.existsSync(MANUAL_GUIDANCE_INDEX),
     latestNotePath,
     latestNoteExists: Boolean(latestNotePath && fs.existsSync(latestNotePath)),
     latestGeneratedAt: latestRun?.generatedAt ?? null,
@@ -1315,7 +1323,7 @@ function loadSelfEvolutionState(db: DatabaseSync | null): DashboardSelfEvolution
     runs,
     packets,
     links: {
-      index: selfEvolutionLink("Review index", REVIEW_PACKETS_INDEX),
+      index: selfEvolutionLink("Dual-entity contract", MANUAL_GUIDANCE_INDEX),
       latestNote: latestRun?.note ?? null,
       curriculum: selfEvolutionLink("Curriculum/backlog", path.join(MEMORY_SELF_EVOLUTION_ROOT, "Capability Curriculum and Backlog.md")),
       systemMap: selfEvolutionLink("System map", path.join(MEMORY_SELF_EVOLUTION_ROOT, "System Map.md")),
