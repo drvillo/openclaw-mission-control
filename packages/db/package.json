@@ -5,7 +5,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@ocmc/shared": "workspace:*",
-    "@openclaw/semantic-layer": "file:/Users/fonkey-oc/.openclaw/lib/semantic-layer",
+    "@openclaw/semantic-layer": "file:../../vendor/openclaw-semantic-layer.tgz",
     "drizzle-orm": "^0.44.6"
   },
   "devDependencies": {
