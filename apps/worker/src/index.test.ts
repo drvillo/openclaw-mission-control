@@ -659,7 +659,7 @@ test("pending provider initialization is distinct from an unhealthy persisted in
     agentId: "main", workspacePath: "/nonexistent-memory-fixture",
     health: { version: 2, agentId: "main", providerId: "memory-core", status: "degraded",
       message: "Memory embeddings are pending. Search results may be incomplete.",
-      details: { legacy: { vector: { index: { state: "complete" } }, custom: {
+      details: { legacy: { files: 1, chunks: 1, vector: { index: { state: "complete" } }, custom: {
         providerState: { mode: "pending" }, indexIdentity: { status: "valid" },
       } } },
     },
@@ -669,6 +669,11 @@ test("pending provider initialization is distinct from an unhealthy persisted in
   assert.equal(pending.qmdHealthy, false);
   assert.equal(JSON.parse(pending.rawJson).health.status, "degraded");
   assert.match(pending.qmdMessage, /embeddings are pending/);
+  entry.health.details.legacy.vector.index.state = "empty";
+  assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "index_unhealthy");
+  entry.health.details.legacy.files = 0;
+  entry.health.details.legacy.chunks = 0;
+  assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "provider_pending");
   entry.health.details.legacy.vector.index.state = "incomplete";
   assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "index_unhealthy");
   entry.health.details.legacy.vector.index.state = "complete";

@@ -23,10 +23,12 @@ export function normalizeMemoryStatus(input: unknown, recordedAt: string): Memor
     const custom = optionalRecord(legacy.custom);
     // Pending lazy provider initialization is distinct from a broken persisted index.
     // Keep native degraded health visible; this does not assert embedding readiness.
+    const vectorState = optionalRecord(optionalRecord(legacy.vector).index).state;
+    const indexCompleteOrEmpty = vectorState === "complete" || (vectorState === "empty" && legacy.files === 0 && legacy.chunks === 0);
     const providerPending = health.status === "degraded"
       && optionalRecord(custom.providerState).mode === "pending"
       && optionalRecord(custom.indexIdentity).status === "valid"
-      && optionalRecord(optionalRecord(legacy.vector).index).state === "complete";
+      && indexCompleteOrEmpty;
     // Provider health is a supported online read, not the offline CLI's aggregate diagnostics.
     const message = `Memory Core: ${health.status}${typeof health.message === "string" ? `; ${health.message}` : ""}; embedding efficacy not verified by this check`;
     return MemoryHealthSchema.parse({
