@@ -2773,6 +2773,9 @@ function replaceTable(db: DatabaseSync, table: string) {
 export function openMissionControlDb(filePath: string): DatabaseSync {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const db = new DatabaseSync(filePath);
+  // The web app and launchd worker can start together. Wait briefly for a
+  // competing writer instead of failing immediately with SQLITE_BUSY.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`
     CREATE TABLE IF NOT EXISTS webhook_events (
