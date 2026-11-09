@@ -17,8 +17,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@openclaw/semantic-layer':
-        specifier: file:/Users/fonkey-oc/.openclaw/lib/semantic-layer
-        version: file:../lib/semantic-layer
+        specifier: file:../../vendor/openclaw-semantic-layer.tgz
+        version: file:vendor/openclaw-semantic-layer.tgz
       next:
         specifier: 16.2.2
         version: 16.2.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -91,8 +91,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       '@openclaw/semantic-layer':
-        specifier: file:/Users/fonkey-oc/.openclaw/lib/semantic-layer
-        version: file:../lib/semantic-layer
+        specifier: file:../../vendor/openclaw-semantic-layer.tgz
+        version: file:vendor/openclaw-semantic-layer.tgz
       drizzle-orm:
         specifier: ^0.44.6
         version: 0.44.7
@@ -883,8 +883,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@openclaw/semantic-layer@file:../lib/semantic-layer':
-    resolution: {directory: ../lib/semantic-layer, type: directory}
+  '@openclaw/semantic-layer@file:vendor/openclaw-semantic-layer.tgz':
+    resolution: {integrity: sha512-wd5YUqvUzYlRUWgpCWmz7HYVFp7Gcx1IxMNWV4im6nfeNhzzSnevkjTuGkngw292hsVrCqeqA2qZzIMruhlTpA==, tarball: file:vendor/openclaw-semantic-layer.tgz}
+    version: 0.0.0
     hasBin: true
 
   '@oxc-project/types@0.133.0':
@@ -2344,7 +2345,7 @@ snapshots:
   '@next/swc-win32-x64-msvc@16.2.2':
     optional: true
 
-  '@openclaw/semantic-layer@file:../lib/semantic-layer': {}
+  '@openclaw/semantic-layer@file:vendor/openclaw-semantic-layer.tgz': {}
 
   '@oxc-project/types@0.133.0': {}
 

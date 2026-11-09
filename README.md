@@ -42,11 +42,14 @@ Use `.env.local` for machine-specific settings. The repo’s `.gitignore` alread
 
 The repo includes a GitHub Actions workflow at `.github/workflows/ci.yml` that:
 
-- installs dependencies with `pnpm`
+- installs dependencies with `pnpm install --frozen-lockfile`
 - runs `pnpm typecheck`
 - runs `pnpm build`
 
 This is the right initial CI surface for Mission Control because the highest-probability regressions here are TypeScript contract drift and build breakage.
+
+The external semantic runtime is pinned as a portable dependency archive; see
+[vendor/README.md](vendor/README.md) for provenance and refresh instructions.
 
 ## macOS Startup
 
