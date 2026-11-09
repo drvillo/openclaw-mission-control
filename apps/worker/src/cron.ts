@@ -1,15 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import type { CronJob, CronRun } from "@ocmc/shared";
 import { CronJobSchema, CronRunSchema } from "@ocmc/shared";
-
-function readJson<T>(filePath: string, fallback: T): T {
-  try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return fallback;
-  }
-}
+import { gatewayCall, gatewayPages, record, type GatewayCall } from "./gateway";
 
 function toScheduleLabel(schedule: Record<string, unknown>): string {
   if (schedule.kind === "cron") {
@@ -25,11 +16,8 @@ function toScheduleLabel(schedule: Record<string, unknown>): string {
   return JSON.stringify(schedule);
 }
 
-export function collectCronState(openclawHome: string, recordedAt: string): { cronJobs: CronJob[]; cronRuns: CronRun[] } {
-  const cronRoot = path.join(openclawHome, "cron");
-  const jobsPath = path.join(cronRoot, "jobs.json");
-  const jobsPayload = readJson<{ jobs?: unknown[] }>(jobsPath, { jobs: [] });
-  const cronJobs = (jobsPayload.jobs ?? []).map((input) => {
+export function normalizeCronState(jobs: Record<string, unknown>[], runs: Record<string, unknown>[], recordedAt: string): { cronJobs: CronJob[]; cronRuns: CronRun[] } {
+  const cronJobs = jobs.map((input) => {
     const job = (input ?? {}) as Record<string, unknown>;
     const schedule = ((job.schedule ?? {}) as Record<string, unknown>) ?? {};
     const state = ((job.state ?? {}) as Record<string, unknown>) ?? {};
@@ -54,26 +42,15 @@ export function collectCronState(openclawHome: string, recordedAt: string): { cr
   });
 
   const cronRuns: CronRun[] = [];
-  for (const job of cronJobs) {
-    const runFile = path.join(cronRoot, "runs", `${job.jobId}.jsonl`);
-    if (!existsSync(runFile)) {
-      continue;
-    }
-    const lines = readFileSync(runFile, "utf8")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(-10);
-    for (const line of lines) {
-      const run = JSON.parse(line) as Record<string, unknown>;
+  for (const run of runs) {
       const ts = typeof run.ts === "number" ? run.ts : Date.parse(recordedAt);
       cronRuns.push(
         CronRunSchema.parse({
           runId:
             typeof run.sessionId === "string"
-              ? `${job.jobId}:${run.sessionId}:${ts}`
-              : `${job.jobId}:${ts}:${String(run.action ?? "event")}`,
-          jobId: String(run.jobId ?? job.jobId),
+              ? `${String(run.jobId)}:${run.sessionId}:${ts}`
+              : `${String(run.jobId)}:${ts}:${String(run.action ?? "event")}`,
+          jobId: String(run.jobId ?? "unknown-job"),
           ts,
           action: String(run.action ?? "unknown"),
           status: String(run.status ?? "unknown"),
@@ -91,9 +68,20 @@ export function collectCronState(openclawHome: string, recordedAt: string): { cr
           rawJson: JSON.stringify(run, null, 2),
         }),
       );
-    }
   }
 
   cronRuns.sort((a, b) => b.ts - a.ts);
   return { cronJobs, cronRuns };
+}
+
+export async function collectCronState(recordedAt: string, call: GatewayCall = gatewayCall) {
+  const [jobs, response] = await Promise.all([
+    gatewayPages(call, "cron.list", "jobs", { includeDisabled: true }),
+    // Run history is a recent window, not a full archive. Avoid unbounded history scans.
+    call("cron.runs", { scope: "all", sortDir: "desc", limit: 200 }),
+  ]);
+  const payload = record(response);
+  if (!Array.isArray(payload.entries)) throw new Error("Gateway cron.runs omitted entries");
+  const runs = payload.entries.map(record);
+  return normalizeCronState(jobs, runs, recordedAt);
 }

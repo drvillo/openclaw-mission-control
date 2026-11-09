@@ -452,11 +452,23 @@ export async function MissionControlPage({
         <MetricCard label="Audit" value={state.findings.length} caption="loaded findings" detail={`${state.memoryHealth.length} memory scopes`} />
       </section>
 
+      <Panel title="Source freshness" copy="Each source refreshes independently. Failed sources retain their last successful data.">
+        <section className="ops-grid">
+          {Object.entries(snapshot.sources ?? {}).map(([name, source]) => (
+            <div className="ops-field" key={name}>
+              <span>{name}</span><strong>{source.status}</strong>
+              <small>{source.lastSuccessAt ? `Last success: ${formatDateTime(source.lastSuccessAt)}` : "No successful refresh recorded"}</small>
+              {source.error ? <small>{source.error}</small> : null}
+            </div>
+          ))}
+        </section>
+      </Panel>
+
       <OpsNextActionCenterline items={opsNextActions} />
 
       <Panel
         title="Agent Routing"
-        copy="Request-level routing evidence from `main` session logs, including misroutes, recovery prompts, accepted spawns, direct execution fallback, and child completion state."
+        copy="Request-level routing evidence from supported `main` session history, including misroutes, recovery prompts, accepted spawns, direct execution fallback, and child completion state."
       >
         <RoutingPanel groups={state.routingGroups} />
       </Panel>
@@ -527,7 +539,7 @@ export async function MissionControlPage({
         </div>
       </Panel>
 
-      <Panel title="Cron Run History" copy="Recent execution history, including self-evolution review and task-board hygiene sweeps.">
+      <Panel title="Cron Run History" copy="The latest 200 execution records across scheduled jobs, including delivery outcomes.">
         <CronRunsPanel items={state.cronRuns} />
       </Panel>
 
@@ -617,7 +629,7 @@ export async function MissionControlPage({
         </div>
       </Panel>
 
-      <Panel title="Memory Health" copy="Workspace memory doctor status, including daily memory coverage and QMD availability.">
+      <Panel title="Memory Health" copy="Workspace memory doctor status, including native index status and memory coverage.">
         <div className="table-shell">
           <table>
             <thead>
@@ -628,7 +640,7 @@ export async function MissionControlPage({
                 <th>Path</th>
                 <th>Today</th>
                 <th>Latest daily</th>
-                <th>QMD</th>
+                <th>Memory index</th>
               </tr>
             </thead>
             <tbody>

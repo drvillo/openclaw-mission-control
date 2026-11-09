@@ -3,6 +3,12 @@ import { applySelfEvolutionImplementationTaskStatuses, buildOpsNextActionItems, 
 
 const note = { label: "run", path: "/tmp/run.md", href: "obsidian://open", exists: true, vaultPath: "run.md", title: "run", markdown: "", sectionId: null };
 
+test("failed source refresh is visible instead of a healthy empty dashboard", () => {
+  const state = dashboardState();
+  state.snapshot.sources = { workflows: { status: "stale", checkedAt: "2026-11-08", lastSuccessAt: "2026-11-07", error: "ledger unavailable" } };
+  expect(buildOpsNextActionItems(state)[0].id).toBe("source-refresh-failed");
+});
+
 function dashboardState(overrides: Partial<DashboardState> = {}): DashboardState {
   return {
     snapshot: {

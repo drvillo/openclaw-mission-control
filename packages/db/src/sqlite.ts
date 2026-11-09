@@ -15,11 +15,11 @@ import type {
 } from "@ocmc/shared";
 
 export type DerivedStatePayload = {
-  webhookEvents: EventEnvelope[];
-  taskSnapshots: TaskSnapshot[];
-  runtimeTasks: RuntimeTask[];
-  taskFlows: TaskFlow[];
-  auditFindings: AuditFinding[];
+  webhookEvents?: EventEnvelope[];
+  taskSnapshots?: TaskSnapshot[];
+  runtimeTasks?: RuntimeTask[];
+  taskFlows?: TaskFlow[];
+  auditFindings?: AuditFinding[];
   memoryHealth?: MemoryHealth[];
   cronJobs?: CronJob[];
   cronRuns?: CronRun[];
@@ -3943,17 +3943,17 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
 
   try {
     db.exec("BEGIN;");
-    replaceTable(db, "webhook_events");
-    replaceTable(db, "task_snapshots");
-    replaceTable(db, "runtime_tasks");
-    replaceTable(db, "task_flows");
-    replaceTable(db, "audit_findings");
-    replaceTable(db, "memory_health");
-    replaceTable(db, "cron_jobs");
-    replaceTable(db, "cron_runs");
-    replaceTable(db, "routing_attempts");
+    if (payload.webhookEvents !== undefined) replaceTable(db, "webhook_events");
+    if (payload.taskSnapshots !== undefined) replaceTable(db, "task_snapshots");
+    if (payload.runtimeTasks !== undefined) replaceTable(db, "runtime_tasks");
+    if (payload.taskFlows !== undefined) replaceTable(db, "task_flows");
+    if (payload.auditFindings !== undefined) replaceTable(db, "audit_findings");
+    if (payload.memoryHealth !== undefined) replaceTable(db, "memory_health");
+    if (payload.cronJobs !== undefined) replaceTable(db, "cron_jobs");
+    if (payload.cronRuns !== undefined) replaceTable(db, "cron_runs");
+    if (payload.routingAttempts !== undefined) replaceTable(db, "routing_attempts");
 
-    for (const event of payload.webhookEvents) {
+    for (const event of payload.webhookEvents ?? []) {
       insertWebhook.run(
         event.eventId,
         event.source,
@@ -3971,7 +3971,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
       );
     }
 
-    for (const task of payload.taskSnapshots) {
+    for (const task of payload.taskSnapshots ?? []) {
       insertTaskSnapshot.run(
         task.id,
         task.title,
@@ -3994,7 +3994,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
       );
     }
 
-    for (const task of payload.runtimeTasks) {
+    for (const task of payload.runtimeTasks ?? []) {
       insertRuntimeTask.run(
         task.taskId,
         task.runtime ?? null,
@@ -4017,7 +4017,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
       );
     }
 
-    for (const flow of payload.taskFlows) {
+    for (const flow of payload.taskFlows ?? []) {
       insertTaskFlow.run(
         flow.flowId,
         flow.syncMode ?? null,
@@ -4037,7 +4037,7 @@ export function syncDerivedState(db: DatabaseSync, payload: DerivedStatePayload)
       );
     }
 
-    for (const finding of payload.auditFindings) {
+    for (const finding of payload.auditFindings ?? []) {
       insertAuditFinding.run(
         finding.findingId,
         finding.kind,

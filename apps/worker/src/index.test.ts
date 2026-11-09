@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { collectCronState } from "./cron.js";
+import { normalizeCronState } from "./cron.js";
 import { collectWebhookEvents } from "./events.js";
 import { collectMemoryHealth } from "./memory.js";
-import { collectRoutingAttempts } from "./routing.js";
+import { parseRoutingTranscripts } from "./routing.js";
 import { buildWorkerSnapshot, normalizeRuntimePayloads } from "./runtime.js";
 import { collectTaskSnapshots } from "./task-board.js";
 import { countRows, openMissionControlDb, syncDerivedState } from "@ocmc/db";
@@ -271,8 +271,7 @@ test("collectMemoryHealth reports local workspace daily coverage", async () => {
   writeFileSync(path.join(workspace, "memory", "2026-04-20.md"), "# 2026-04-20\n");
 
   const report = await collectMemoryHealth(root, "2026-04-20T12:00:00.000Z", {
-    today: "2026-04-20",
-    qmdProbe: async () => ({ healthy: true, message: "qmd ok" }),
+    statusProbe: async () => [{ agentId: "workspace-demo", workspacePath: workspace, health: { version: 2, agentId: "workspace-demo", providerId: "memory-core", status: "ready" } }],
   });
   assert.equal(report.length, 1);
   assert.equal(report[0].workspaceId, "workspace-demo");
@@ -282,46 +281,36 @@ test("collectMemoryHealth reports local workspace daily coverage", async () => {
   assert.equal(report[0].memoryScope, "local");
 });
 
-test("collectMemoryHealth flags stale main workspace links as path misconfigured", async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-memory-main-"));
-  const workspace = path.join(root, "workspace");
-  const sharedRoot = path.join(root, "shared-memory");
-  mkdirSync(path.join(sharedRoot, "daily"), { recursive: true });
-  mkdirSync(workspace, { recursive: true });
-  writeFileSync(path.join(root, "openclaw.json"), JSON.stringify({
-    memory: {
-      qmd: {
-        paths: [
-          { path: sharedRoot, name: "obsidian-openclaw-memory", pattern: "**/*.md" },
-        ],
-      },
-    },
-  }));
-  writeFileSync(path.join(workspace, "AGENTS.md"), "# AGENTS\n");
-  writeFileSync(path.join(sharedRoot, "MEMORY.md"), "# MEMORY\n");
-  writeFileSync(path.join(sharedRoot, "daily", "2026-04-20.md"), "# 2026-04-20\n");
-  const staleDaily = path.join(root, "stale-memory", "daily");
-  const staleMemory = path.join(root, "stale-memory", "MEMORY.md");
-  mkdirSync(path.dirname(staleDaily), { recursive: true });
-  writeFileSync(staleMemory, "# stale\n");
-  writeFileSync(staleDaily, "not-a-dir\n");
-  // Broken target is enough for link mismatch detection.
-  symlinkSync(staleDaily, path.join(workspace, "memory"));
-  symlinkSync(staleMemory, path.join(workspace, "MEMORY.md"));
-
-  const report = await collectMemoryHealth(root, "2026-04-20T12:00:00.000Z", {
-    today: "2026-04-20",
-    qmdProbe: async () => ({ healthy: true, message: "qmd ok" }),
+test("fresh builtin memory does not require QMD links or a daily note", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-memory-fresh-"));
+  const report = await collectMemoryHealth(root, "2026-11-08T12:00:00.000Z", {
+    statusProbe: async () => [{ agentId: "main", workspacePath: root, health: { version: 2, agentId: "main", providerId: "memory-core", status: "ready" } }],
   });
-
-  assert.equal(report.length, 1);
-  assert.equal(report[0].workspaceId, "workspace");
-  assert.equal(report[0].memoryScope, "shared");
-  assert.equal(report[0].status, "path_misconfigured");
-  assert.equal(report[0].pathStatus, "misconfigured");
+  assert.equal(report[0].status, "ok");
+  assert.equal(report[0].hasTodayDaily, false);
+  assert.equal(report[0].pathStatus, "not_applicable");
+  assert.match(report[0].qmdMessage, /Memory Core: ready/);
 });
 
-test("collectCronState reads cron jobs and recent runs", () => {
+test("online memory health keeps degraded indexes visible and never invokes offline diagnostics", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-memory-rpc-"));
+  writeFileSync(path.join(root, "openclaw.json"), JSON.stringify({ agents: { entries: { main: { workspace: root } } } }));
+  const report = await collectMemoryHealth(root, "2026-11-08T12:00:00.000Z", {
+    call: async (method, params) => {
+      assert.equal(method, "memory.status");
+      assert.deepEqual(params, { agentId: "main" });
+      return { version: 2, agentId: "main", providerId: "memory-core", status: "degraded", message: "index metadata missing" };
+    },
+  });
+  assert.equal(report[0].status, "index_unhealthy");
+  assert.equal(report[0].qmdHealthy, false);
+  assert.match(report[0].qmdMessage, /index metadata missing/);
+  await assert.rejects(collectMemoryHealth(root, "2026-11-08T12:00:00.000Z", {
+    call: async () => { throw new Error("Gateway unavailable"); },
+  }), /Gateway unavailable/);
+});
+
+test("normalizes Gateway cron jobs and recent runs", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ocmc-cron-"));
   const cronRoot = path.join(root, "cron");
   mkdirSync(path.join(cronRoot, "runs"), { recursive: true });
@@ -363,7 +352,7 @@ test("collectCronState reads cron jobs and recent runs", () => {
     })}\n`,
   );
 
-  const state = collectCronState(root, "2026-04-20T12:00:00.000Z");
+  const state = normalizeCronState(JSON.parse(readFileSync(path.join(cronRoot, "jobs.json"), "utf8")).jobs, [JSON.parse(readFileSync(path.join(cronRoot, "runs", "job-1.jsonl"), "utf8"))], "2026-04-20T12:00:00.000Z");
   assert.equal(state.cronJobs.length, 1);
   assert.equal(state.cronJobs[0].scheduleLabel, "0 3 * * * (Europe/Rome)");
   assert.equal(state.cronRuns.length, 1);
@@ -627,7 +616,10 @@ test("collectRoutingAttempts classifies wrong tools, reconfirmation, spawn compl
     '2026-04-21T09:31:47.067+02:00 [agent/embedded] incomplete turn detected: runId=run-main-1 sessionId=mail-incomplete stopReason=stop payloads=0 — surfacing error to user\n',
   );
 
-  const attempts = collectRoutingAttempts(root);
+  const attempts = parseRoutingTranscripts(readdirSync(sessionRoot).map((name) => ({
+    sessionId: name.replace(/\.jsonl$/, ""),
+    records: readFileSync(path.join(sessionRoot, name), "utf8").trim().split("\n").map((line) => JSON.parse(line)),
+  })), { incompleteTurns: [{ sessionId: "mail-incomplete", runId: "run-main-1", timestamp: "2026-04-21T09:31:47.067+02:00", line: "incomplete turn" }] });
   assert.equal(attempts.length, 5);
 
   const wrongTool = attempts.find((attempt) => attempt.failureMode === "wrong_tool");

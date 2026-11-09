@@ -17,6 +17,7 @@ const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 
 export type SnapshotRow = {
   generatedAt: string | null;
+  sources?: Record<string, { status: "ok" | "stale" | "unavailable"; checkedAt: string; lastSuccessAt: string | null; error: string | null }>;
   tasks: { count: number; flows: number; findings: number; inbox: number; backlog: number };
   ingress: { total: number; bySource: Record<string, number> };
   routing: { total: number; failures: number; pending: number; compliant: number };
@@ -384,6 +385,16 @@ function pushOpsCandidate(candidates: RankedOpsNextAction[], score: number, item
 
 export function buildOpsNextActionItems(state: Pick<DashboardState, "snapshot" | "runtimeTasks" | "flows" | "findings" | "memoryHealth" | "cronJobs" | "selfEvolution">, limit = 2): DashboardOpsNextAction[] {
   const candidates: RankedOpsNextAction[] = [];
+  const failedSources = Object.entries(state.snapshot.sources ?? {}).filter(([, source]) => source.status !== "ok");
+  if (failedSources.length) {
+    pushOpsCandidate(candidates, 110, {
+      id: "source-refresh-failed", source: "system", title: "Restore dashboard source updates",
+      summary: failedSources.map(([name]) => name).join(", "), owner: "main",
+      rationale: "These sources could not refresh. Their previous data remains visible and may be out of date.",
+      evidence: failedSources.map(([name, source]) => `${name}: ${source.status}; last success ${source.lastSuccessAt ?? "unknown"}`),
+      href: "/ops",
+    });
+  }
   const activeProposals = state.selfEvolution.packets.filter((packet) => !packet.attic && !["done", "discarded"].includes(normalizeStatus(packet.status)));
   const blockedProposal = activeProposals.find((packet) => packet.approvalRequired && !packet.questionAnswer?.trim());
   if (blockedProposal) {
@@ -454,7 +465,7 @@ export function buildOpsNextActionItems(state: Pick<DashboardState, "snapshot" |
     });
   }
 
-  const unhealthyMemory = state.memoryHealth.find((workspace) => normalizeStatus(workspace.status) !== "ok" || !workspace.qmdHealthy || !workspace.hasTodayDaily);
+  const unhealthyMemory = state.memoryHealth.find((workspace) => normalizeStatus(workspace.status) !== "ok" || !workspace.qmdHealthy);
   if (unhealthyMemory) {
     pushOpsCandidate(candidates, 66, {
       id: `memory-health-${unhealthyMemory.workspaceId}`,
@@ -462,8 +473,8 @@ export function buildOpsNextActionItems(state: Pick<DashboardState, "snapshot" |
       title: "Review memory health gap",
       summary: `${unhealthyMemory.workspaceId}: ${unhealthyMemory.status}`,
       owner: unhealthyMemory.workspaceId,
-      rationale: "Memory freshness and QMD health directly affect recall quality for agents and self-evolution evidence.",
-      evidence: [`Today daily: ${unhealthyMemory.hasTodayDaily ? "yes" : "no"}`, `QMD: ${unhealthyMemory.qmdHealthy ? "ok" : unhealthyMemory.qmdMessage}`, `Path: ${unhealthyMemory.pathStatus}`],
+      rationale: "Native memory index health affects recall; an empty fresh memory corpus is valid.",
+      evidence: [`Today daily: ${unhealthyMemory.hasTodayDaily ? "yes" : "no"}`, `Index: ${unhealthyMemory.qmdHealthy ? "ok" : unhealthyMemory.qmdMessage}`, `Path: ${unhealthyMemory.pathStatus}`],
       href: "/ops",
     });
   }

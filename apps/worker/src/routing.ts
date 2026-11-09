@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { gatewayCall, gatewayPages, type GatewayCall } from "./gateway";
 import { RoutingAttemptSchema, type RoutingAttempt } from "@ocmc/shared";
 
 type RoutingPolicyRule = {
@@ -154,32 +155,6 @@ function parseTimestamp(value: string | undefined): number {
   return Date.parse(value);
 }
 
-function parseGatewayEvidence(openClawHome: string): { incompleteTurns: GatewayIncompleteTurn[] } {
-  const logPath = path.join(openClawHome, "logs", "gateway.err.log");
-  if (!existsSync(logPath)) {
-    return { incompleteTurns: [] };
-  }
-
-  const incompleteTurns: GatewayIncompleteTurn[] = [];
-  const lines = readFileSync(logPath, "utf8").split("\n");
-  for (const line of lines) {
-    const match = line.match(
-      /^(\S+)\s+\[agent\/embedded\] incomplete turn detected: runId=([^\s]+) sessionId=([^\s]+)\s+(.*)$/u,
-    );
-    if (!match) {
-      continue;
-    }
-    incompleteTurns.push({
-      timestamp: match[1],
-      runId: match[2],
-      sessionId: match[3],
-      line,
-    });
-  }
-
-  return { incompleteTurns };
-}
-
 function parseInternalCompletion(raw: string): {
   childSessionKey: string;
   childSessionId: string | null;
@@ -289,32 +264,13 @@ function evaluateCompliance(draft: RoutingAttemptDraft): RoutingAttempt["complia
   return draft.actualTargetAgent === draft.expectedTargetAgent ? "compliant" : "violation";
 }
 
-function findSessionFiles(sessionRoot: string): string[] {
-  if (!existsSync(sessionRoot)) {
-    return [];
-  }
-  return readdirSync(sessionRoot)
-    .filter((name) => /^.+\.jsonl(?:\.reset\..+)?$/u.test(name))
-    .sort()
-    .map((name) => path.join(sessionRoot, name));
-}
-
-function parseSessionFile(filePath: string, rules: RoutingPolicyRule[], gateway: { incompleteTurns: GatewayIncompleteTurn[] }): RoutingAttemptDraft[] {
-  const lines = readFileSync(filePath, "utf8")
-    .split("\n")
-    .filter((line) => line.trim().length > 0);
-  if (lines.length === 0) {
-    return [];
-  }
-
-  let sessionId = path.basename(filePath).split(".jsonl")[0];
+function parseSessionRecords(records: Record<string, unknown>[], sessionId: string, rules: RoutingPolicyRule[], gateway: { incompleteTurns: GatewayIncompleteTurn[] }): RoutingAttemptDraft[] {
   let currentRequest: RequestContext | null = null;
   let sequence = 0;
   const drafts: RoutingAttemptDraft[] = [];
   const pendingByToolCallId = new Map<string, RoutingAttemptDraft>();
 
-  for (const line of lines) {
-    const record = safeJsonParse(line) as Record<string, unknown> | null;
+  for (const record of records) {
     if (!record) {
       continue;
     }
@@ -608,12 +564,11 @@ function parseSessionFile(filePath: string, rules: RoutingPolicyRule[], gateway:
   return drafts;
 }
 
-export function collectRoutingAttempts(openClawHome: string): RoutingAttempt[] {
-  const sessionRoot = path.join(openClawHome, "agents", "main", "sessions");
-  const rules = loadRoutingPolicy().rules ?? [];
-  const gateway = parseGatewayEvidence(openClawHome);
-  const drafts = findSessionFiles(sessionRoot).flatMap((filePath) => parseSessionFile(filePath, rules, gateway));
+export type RoutingTranscript = { sessionId: string; records: Record<string, unknown>[] };
 
+export function parseRoutingTranscripts(transcripts: RoutingTranscript[], gateway: { incompleteTurns: GatewayIncompleteTurn[] } = { incompleteTurns: [] }): RoutingAttempt[] {
+  const rules = loadRoutingPolicy().rules ?? [];
+  const drafts = transcripts.flatMap((item) => parseSessionRecords(item.records, item.sessionId, rules, gateway));
   return drafts
     .sort((left, right) => {
       const byTime = parseTimestamp(right.recordedAt) - parseTimestamp(left.recordedAt);
@@ -625,7 +580,34 @@ export function collectRoutingAttempts(openClawHome: string): RoutingAttempt[] {
     .map((draft) =>
       RoutingAttemptSchema.parse({
         ...draft,
+        routingId: `${draft.sourceSessionId}:${draft.toolCallId ?? `${draft.sourceMessageId}:${draft.mechanism}`}`,
         rawJson: JSON.stringify(draft.evidence, null, 2),
       }),
     );
+}
+
+/** Preserve policy classification, but consume the supported transcript projection. */
+export async function collectRoutingAttempts(sessions: Record<string, unknown>[], call: GatewayCall = gatewayCall): Promise<RoutingAttempt[]> {
+  const transcripts: RoutingTranscript[] = [];
+  // Routing policy describes main's handoffs. Child transcripts are not separate requests.
+  for (const session of sessions.filter((row) => row.agentId === "main" || String(row.key).startsWith("agent:main:"))) {
+    const messages = await gatewayPages(call, "chat.history", "messages", {
+      sessionKey: session.key, agentId: "main", maxBytes: 4 * 1024 * 1024,
+      maxChars: 500_000, toolResultMaxChars: 500_000,
+    });
+    const records = messages.map((item) => {
+      const sourceMessage = item.message && typeof item.message === "object" ? item.message as Record<string, unknown> : item;
+      // Gateway transcript projections may use plain text instead of content blocks.
+      const message: Record<string, unknown> = { ...sourceMessage, content: typeof sourceMessage.content === "string" ? [{ type: "text", text: sourceMessage.content }] : sourceMessage.content };
+      const timestamp = sourceMessage.timestamp ?? item.timestamp;
+      return {
+        type: "message",
+        id: item.messageId ?? item.id ?? message.id ?? createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 24),
+        timestamp: typeof timestamp === "number" ? new Date(timestamp).toISOString() : timestamp,
+        message,
+      };
+    }).sort((a, b) => Date.parse(String(a.timestamp)) - Date.parse(String(b.timestamp)));
+    transcripts.push({ sessionId: String(session.sessionId ?? session.key), records });
+  }
+  return parseRoutingTranscripts(transcripts);
 }

@@ -5,7 +5,7 @@ import { openMissionControlDb } from "@ocmc/db";
 import { MISSION_CONTROL_DB_PATH, OPENCLAW_HOME } from "./config";
 
 const execFileAsync = promisify(execFile);
-const OPENCLAW_BIN = "/Users/fonkey-oc/.nvm/versions/node/v22.22.1/bin/openclaw";
+const OPENCLAW_BIN = "/Users/fonkey-oc/.openclaw/bin/openclaw";
 
 export type RuntimeContextRef =
   | { type: "obsidian-task"; taskId: string; detailsRef: string; detailsPath: string }

@@ -1,5 +1,40 @@
 import type { AuditFinding, RuntimeTask, TaskFlow, WorkerSnapshot } from "@ocmc/shared";
 import { AuditFindingSchema, RuntimeTaskSchema, TaskFlowSchema, WorkerSnapshotSchema } from "@ocmc/shared";
+import { record } from "./gateway";
+
+export function normalizeSessionTasks(sessions: Record<string, unknown>[], recordedAt: string): RuntimeTask[] {
+  return sessions.map((session) => {
+    if (typeof session.key !== "string" || !session.key) throw new Error("Session snapshot omitted a stable key");
+    const runtime = session.agentRuntime && typeof session.agentRuntime === "object" ? record(session.agentRuntime) : {};
+    const active = session.hasActiveRun === true;
+    return parseRuntimeTask({
+      taskId: `session:${session.key}`,
+      runtime: typeof runtime.id === "string" ? runtime.id : "openclaw",
+      status: active ? "running" : typeof session.status === "string" && !["running", "queued"].includes(session.status) ? session.status : "idle",
+      agentId: session.agentId ?? session.key.split(":")[1],
+      label: session.displayName ?? session.label ?? session.key,
+      ownerKey: session.parentSessionKey ?? session.spawnedBy,
+      runId: !active ? session.lastRunId : undefined,
+      terminalSummary: session.lastRunError || undefined,
+      createdAt: session.createdAt,
+      lastEventAt: session.lastActivityAt ?? session.updatedAt,
+      session,
+    }, recordedAt);
+  });
+}
+
+export function normalizeWorkflowSnapshot(input: unknown) {
+  const payload = record(input);
+  if (payload.schemaVersion !== 1 || typeof payload.generatedAt !== "string" || !Number.isFinite(Date.parse(payload.generatedAt)) || !Array.isArray(payload.flows) || !Array.isArray(payload.findings)) {
+    throw new Error("Unsupported or incomplete workflow ledger snapshot");
+  }
+  for (const inputFlow of payload.flows) {
+    const flow = record(inputFlow);
+    if (typeof flow.flowId !== "string" || !flow.flowId || typeof flow.status !== "string" || !flow.status) throw new Error("Workflow snapshot omitted identity or status");
+  }
+  const normalized = normalizeRuntimePayloads({}, { flows: payload.flows }, { findings: payload.findings }, payload.generatedAt);
+  return { taskFlows: normalized.taskFlows, auditFindings: normalized.auditFindings };
+}
 
 type RuntimeTaskList = {
   tasks?: unknown[];
@@ -54,7 +89,7 @@ function parseTaskFlow(input: unknown, recordedAt: string): TaskFlow {
     createdAt: typeof flow.createdAt === "number" ? flow.createdAt : null,
     startedAt: typeof flow.startedAt === "number" ? flow.startedAt : null,
     endedAt: typeof flow.endedAt === "number" ? flow.endedAt : null,
-    lastEventAt: typeof flow.lastEventAt === "number" ? flow.lastEventAt : null,
+    lastEventAt: typeof flow.lastEventAt === "number" ? flow.lastEventAt : typeof flow.updatedAt === "number" ? flow.updatedAt : null,
     recordedAt,
     rawJson: JSON.stringify(flow, null, 2),
   });

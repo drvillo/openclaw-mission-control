@@ -35,7 +35,7 @@ Use `.env.local` for machine-specific settings. The repo’s `.gitignore` alread
 
 - reads webhook event logs produced by the OpenClaw scripts
 - reads Obsidian task files for high-level counts
-- reads OpenClaw `tasks`, `tasks flow`, and `tasks audit` output via the worker
+- reads supported Gateway session/cron APIs and the local workflow ledger via the worker
 - exposes a first dashboard for task state, flow state, and webhook ingress visibility
 
 ## CI
@@ -85,3 +85,15 @@ For Tailscale verification, override the URL used for the final checks:
 ```bash
 VERIFY_URL=http://fonkeys-mac-mini:3099 pnpm deploy:web
 ```
+
+## OpenClaw 2026.11 compatibility
+
+The worker uses `openclaw gateway call` for `sessions.list`, `chat.history`, `cron.list`, and `cron.runs`. This uses the selected state's configured local Gateway and credentials; it does not require the admin HTTP RPC plugin. `OPENCLAW_HOME` remains Mission Control's state-root setting. The worker translates it to `OPENCLAW_STATE_DIR` and an explicit `OPENCLAW_CONFIG_PATH` for CLI subprocesses, and ignores inherited Gateway URL/port overrides. Set `OPENCLAW_BIN` to that installation's launcher. The configured Gateway must be running and authorize operator reads.
+
+Runtime rows represent sessions, using `hasActiveRun` for live activity, without claiming that an accepted spawn completed. Routing policy analysis reads main-agent transcript projections through `chat.history`, not the retired JSONL session layout. It covers sessions active within the last 90 days; Gateway read failures or an exceeded pagination budget preserve the previous source snapshot. Cron jobs include disabled jobs; run history is the latest 200 records across jobs.
+
+Durable application flows come from `MISSION_CONTROL_PYTHON <state>/lib/workflow_ledger.py snapshot --json` (Python defaults to `/Users/fonkey-oc/bin/oc-python`). The read-only CLI contract is `{schemaVersion:1,generatedAt:<ISO>,flows:[...],findings:[...]}`. Flows retain their original IDs, revisions, camelCase display fields, `stateJson` and `waitJson`; timestamps are epoch milliseconds. The snapshot must be complete and must fail nonzero when unavailable. Mission Control observes approval state and never advances a workflow during refresh.
+
+Each source publishes its checked time, last successful time and failure state in `snapshots/current.json`. Omitted failed sources leave their existing derived database tables intact; successful empty results clear only that source's derived tables. Business records, including meetings, assertions, reviews and concepts, are outside this refresh boundary. The Ops page exposes stale sources and ranks refresh failures ahead of a misleading healthy empty view.
+
+Memory health uses the supported online `memory.status` Gateway RPC for each configured agent, with at most four CLI requests at a time. The offline `openclaw memory status` CLI is not used while the Gateway owns its stores. Mission Control preserves the provider’s ready, degraded or unavailable result; a failed RPC retains the last complete source snapshot. QMD, shared-memory symlinks and a daily note are no longer health prerequisites. Existing database column names remain for compatibility. Provider health does not verify embedding efficacy; retrieval tests remain a separate migration acceptance check.

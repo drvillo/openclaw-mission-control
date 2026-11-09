@@ -106,7 +106,7 @@ export const MemoryHealthSchema = z.object({
   latestDaily: z.string().nullable(),
   qmdHealthy: z.boolean(),
   qmdMessage: z.string().min(1),
-  status: z.enum(["ok", "daily_missing", "path_misconfigured", "qmd_unhealthy", "missing_agents_md", "missing_memory_md", "write_failed"]),
+  status: z.enum(["ok", "daily_missing", "path_misconfigured", "qmd_unhealthy", "index_unhealthy", "missing_agents_md", "missing_memory_md", "write_failed"]),
   memoryScope: z.enum(["shared", "local"]).optional(),
   pathStatus: z.enum(["ok", "misconfigured", "missing_link", "not_applicable"]).optional(),
   pathMessage: z.string().min(1).optional(),
@@ -193,6 +193,12 @@ export const RoutingAttemptSchema = z.object({
 
 export const WorkerSnapshotSchema = z.object({
   generatedAt: z.string().min(1),
+  sources: z.record(z.string(), z.object({
+    status: z.enum(["ok", "stale", "unavailable"]),
+    checkedAt: z.string(),
+    lastSuccessAt: z.string().nullable(),
+    error: z.string().nullable(),
+  })).optional(),
   tasks: z.object({
     count: z.number().int().nonnegative(),
     flows: z.number().int().nonnegative(),
