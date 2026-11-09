@@ -106,7 +106,7 @@ export const MemoryHealthSchema = z.object({
   latestDaily: z.string().nullable(),
   qmdHealthy: z.boolean(),
   qmdMessage: z.string().min(1),
-  status: z.enum(["ok", "daily_missing", "path_misconfigured", "qmd_unhealthy", "index_unhealthy", "missing_agents_md", "missing_memory_md", "write_failed"]),
+  status: z.enum(["ok", "daily_missing", "path_misconfigured", "qmd_unhealthy", "index_unhealthy", "provider_pending", "missing_agents_md", "missing_memory_md", "write_failed"]),
   memoryScope: z.enum(["shared", "local"]).optional(),
   pathStatus: z.enum(["ok", "misconfigured", "missing_link", "not_applicable"]).optional(),
   pathMessage: z.string().min(1).optional(),

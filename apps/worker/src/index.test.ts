@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { normalizeCronState } from "./cron.js";
 import { collectWebhookEvents } from "./events.js";
-import { collectMemoryHealth } from "./memory.js";
+import { collectMemoryHealth, normalizeMemoryStatus } from "./memory.js";
 import { parseRoutingTranscripts } from "./routing.js";
 import { buildWorkerSnapshot, normalizeRuntimePayloads } from "./runtime.js";
 import { collectTaskSnapshots } from "./task-board.js";
@@ -651,4 +651,30 @@ test("collectRoutingAttempts classifies wrong tools, reconfirmation, spawn compl
   assert.equal(incompleteTurn.failureMode, "incomplete_turn");
   assert.equal(incompleteTurn.status, "awaiting_completion");
   assert.equal(incompleteTurn.complianceStatus, "compliant");
+});
+
+
+test("pending provider initialization is distinct from an unhealthy persisted index", () => {
+  const entry = {
+    agentId: "main", workspacePath: "/nonexistent-memory-fixture",
+    health: { version: 2, agentId: "main", providerId: "memory-core", status: "degraded",
+      message: "Memory embeddings are pending. Search results may be incomplete.",
+      details: { legacy: { vector: { index: { state: "complete" } }, custom: {
+        providerState: { mode: "pending" }, indexIdentity: { status: "valid" },
+      } } },
+    },
+  };
+  const pending = normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0];
+  assert.equal(pending.status, "provider_pending");
+  assert.equal(pending.qmdHealthy, false);
+  assert.equal(JSON.parse(pending.rawJson).health.status, "degraded");
+  assert.match(pending.qmdMessage, /embeddings are pending/);
+  entry.health.details.legacy.vector.index.state = "incomplete";
+  assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "index_unhealthy");
+  entry.health.details.legacy.vector.index.state = "complete";
+  entry.health.details.legacy.custom.indexIdentity.status = "invalid";
+  assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "index_unhealthy");
+  entry.health.details.legacy.custom.indexIdentity.status = "valid";
+  entry.health.details.legacy.custom.providerState.mode = "degraded";
+  assert.equal(normalizeMemoryStatus([entry], "2026-11-09T08:00:00Z")[0].status, "index_unhealthy");
 });
